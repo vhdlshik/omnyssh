@@ -10,6 +10,7 @@
   import type { Terminal } from '@xterm/xterm';
   import type { FitAddon } from '@xterm/addon-fit';
   import { Channel } from '@tauri-apps/api/core';
+  import { getCurrentWebview } from '@tauri-apps/api/webview';
   import { theme } from '$lib/stores/theme';
   import { xtermTheme } from '$lib/theme/terminalTheme';
   import { sessions, type Session } from '$lib/stores/sessions';
@@ -26,6 +27,9 @@
   } from '$lib/ipc/commands';
   import { shouldFadeTop } from './terminalFade';
   import { chunkBytes, isCopyShortcut, layoutFallback } from './terminalInput';
+  import { parseOsc7, parseTitleCwd, toSftpDir } from './terminalCwd';
+  import { uploadToDir, type UploadStatus } from './terminalUpload';
+  import { formatBytes } from '$lib/stores/sftp';
   import { isMac } from '$lib/platform';
   import type { TerminalBytes } from '$lib/bindings';
 
@@ -66,6 +70,7 @@
     });
   }
 
+  let root: HTMLDivElement;
   let container: HTMLDivElement;
   let term: Terminal | undefined;
   let fitAddon: FitAddon | undefined;
@@ -75,6 +80,64 @@
   let ready = $state(false);
   let themeUnsub: (() => void) | undefined;
   let resizeObserver: ResizeObserver | undefined;
+  let stopDragDrop: (() => void) | undefined;
+
+  // The shell's directory as it last reported it (see terminalCwd): OSC 7 when the
+  // shell emits it, else the `user@host: dir` window title. Unknown means home.
+  let titleDir = $state<string | undefined>(undefined);
+  let osc7Dir = $state<string | undefined>(undefined);
+  const shellDir = $derived(osc7Dir ?? titleDir ?? '~');
+
+  // Files dragged over / dropped onto this terminal go to `shellDir` over SFTP.
+  let dragOver = $state(false);
+  let upload = $state<UploadStatus | null>(null);
+  let notice = $state<string | null>(null);
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+  let uploadChain: Promise<void> = Promise.resolve();
+
+  /** Whether a drag-drop position (physical px, webview-relative) is over this tab. */
+  function overTerminal(position: { x: number; y: number }): boolean {
+    if (!active || !root) return false;
+    const scale = window.devicePixelRatio || 1;
+    const x = position.x / scale;
+    const y = position.y / scale;
+    const r = root.getBoundingClientRect();
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  }
+
+  function showNotice(message: string): void {
+    if (noticeTimer !== undefined) clearTimeout(noticeTimer);
+    notice = message;
+    noticeTimer = setTimeout(() => {
+      noticeTimer = undefined;
+      notice = null;
+    }, 4000);
+  }
+
+  /** Queue an upload of `paths` into the shell's current directory. Drops run one
+   *  after another, so the progress pill always describes a single batch. */
+  function uploadDropped(paths: string[]): void {
+    const dir = shellDir;
+    uploadChain = uploadChain.then(async () => {
+      if (destroyed) return;
+      try {
+        const result = await uploadToDir(session.hostName, toSftpDir(dir), paths, (s) => {
+          if (!destroyed) upload = s;
+        });
+        if (result.failures.length > 0) {
+          lastError.set(`Upload to ${dir} failed — ${result.failures.join('; ')}`);
+        }
+        if (result.uploaded > 0) {
+          const what = result.uploaded === 1 ? '1 file' : `${result.uploaded} files`;
+          showNotice(`Uploaded ${what} to ${dir}`);
+        }
+      } catch (err) {
+        lastError.set(`Upload failed: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        upload = null;
+      }
+    });
+  }
   let fitScheduled = false;
   // The top-edge fade dissolves scrolled output into the top edge, but never the live
   // prompt: after `clear`/Ctrl+L the cursor homes to the top, so the fade must lift
@@ -125,6 +188,37 @@
       term.loadAddon(fitAddon);
       term.open(container);
       term.onScroll(syncScrolled);
+      // Track the shell's directory for drag-and-drop uploads. Neither handler
+      // consumes the sequence, so xterm's own title handling still runs.
+      term.parser.registerOscHandler(7, (data) => {
+        const dir = parseOsc7(data);
+        if (dir) osc7Dir = dir;
+        return false;
+      });
+      term.onTitleChange((title) => {
+        // A title that names no directory (a running program's) keeps the last one.
+        const dir = parseTitleCwd(title);
+        if (dir) titleDir = dir;
+      });
+      void getCurrentWebview()
+        .onDragDropEvent((event) => {
+          const p = event.payload;
+          if (p.type === 'leave') {
+            dragOver = false;
+          } else if (p.type === 'drop') {
+            dragOver = false;
+            if (p.paths.length > 0 && termId != null && overTerminal(p.position)) {
+              uploadDropped(p.paths);
+            }
+          } else {
+            dragOver = termId != null && overTerminal(p.position);
+          }
+        })
+        .then((unlisten) => {
+          if (destroyed) unlisten();
+          else stopDragDrop = unlisten;
+        })
+        .catch(() => {});
 
       // The #1 theme-regression guard (§5.1): push the matching xterm theme to this
       // terminal — including already-open ones — whenever the store flips. Its
@@ -211,6 +305,8 @@
     destroyed = true;
     themeUnsub?.();
     resizeObserver?.disconnect();
+    stopDragDrop?.();
+    if (noticeTimer !== undefined) clearTimeout(noticeTimer);
     // Idempotent: a remote-exit teardown already dropped this id backend-side (§3.4).
     if (termId != null) void terminalClose(termId).catch(() => {});
     term?.dispose();
@@ -237,13 +333,56 @@
 <!-- bg-surface fills behind the macOS traffic lights (no seam). Text selection stays
      disabled app-wide (app.css); the terminal is the one selectable surface, handled
      by xterm's own selection (not CSS). -->
-<div class="absolute inset-0 overflow-hidden bg-surface {active ? '' : 'hidden'}">
+<div bind:this={root} class="absolute inset-0 overflow-hidden bg-surface {active ? '' : 'hidden'}">
   <!-- Inset via this wrapper, not the xterm host: padding on the element xterm mounts
        into makes FitAddon over-size, sliding the last row under the status bar. The top
        inset clears the macOS traffic-light strip; the bottom gap clears the footer. -->
   <div class="h-full w-full" style="padding: max(var(--titlebar-h), 0.75rem) 0.5rem 1rem;">
     <div bind:this={container} class="h-full w-full" class:term-fade={scrolled}></div>
   </div>
+
+  {#if dragOver}
+    <div
+      class="pointer-events-none absolute inset-3 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-accent bg-accent/10"
+      style="top: max(var(--titlebar-h), 0.75rem);"
+    >
+      <p class="rounded-md bg-surface-raised px-3 py-1.5 text-sm text-muted shadow">
+        Drop to upload to <span class="font-mono text-fg">{shellDir}</span>
+      </p>
+    </div>
+  {/if}
+
+  {#if upload || notice}
+    <div
+      class="pointer-events-none absolute bottom-6 right-6 z-10 w-72 rounded-md bg-surface-raised px-3 py-2 text-xs text-muted shadow"
+      role="status"
+      aria-label="upload progress"
+    >
+      {#if upload}
+        <div class="flex items-center justify-between gap-3">
+          <span class="min-w-0 truncate">
+            Uploading <span class="font-mono text-fg">{upload.name}</span>
+            {#if upload.count > 1}({upload.index}/{upload.count}){/if}
+          </span>
+          {#if upload.total > 0}
+            <span class="shrink-0 tabular-nums">
+              {formatBytes(upload.done)} / {formatBytes(upload.total)}
+            </span>
+          {/if}
+        </div>
+        <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-surface-inset">
+          <div
+            class="h-full rounded-full bg-accent transition-[width]"
+            style="width: {upload.total > 0
+              ? Math.min(100, Math.round((upload.done / upload.total) * 100))
+              : 0}%"
+          ></div>
+        </div>
+      {:else}
+        <span class="block truncate">{notice}</span>
+      {/if}
+    </div>
+  {/if}
 </div>
 
 <style>

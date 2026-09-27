@@ -372,7 +372,13 @@ async fn do_upload(
     let mut local_file = tokio::fs::File::open(local)
         .await
         .context("open local file for upload")?;
-    let total = local_file.metadata().await.map(|m| m.len()).unwrap_or(0);
+    let meta = local_file.metadata().await.ok();
+    // Opening a directory succeeds on Unix and only the first read fails — by then
+    // the remote file would already exist, empty. Refuse before touching the remote.
+    if meta.as_ref().is_some_and(|m| m.is_dir()) {
+        anyhow::bail!("folders cannot be uploaded: {local}");
+    }
+    let total = meta.map(|m| m.len()).unwrap_or(0);
 
     let mut remote_file = sftp
         .create(remote)
