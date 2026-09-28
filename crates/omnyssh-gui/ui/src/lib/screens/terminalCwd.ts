@@ -2,7 +2,26 @@
 // "current directory" of its own, so the shell has to report it: OSC 7
 // (`ESC ] 7 ; file://host/path BEL`, emitted by vte.sh, zsh/fish integrations, starship…)
 // is exact; failing that, the stock Debian/Ubuntu/Fedora bash prompts put
-// `user@host: ~/dir` in the window title, which is good enough when it parses.
+// `user@host: ~/dir` in the window title, which is good enough when it parses. A shell
+// that reports neither is asked outright: `pwdProbeCommand` is typed into it, and its
+// answer comes back on the private `PWD_OSC` sequence, invisible in the output.
+
+/** The private OSC number the pwd probe answers on ("OmnY" on a phone keypad). */
+export const PWD_OSC = 6669;
+
+/** The line typed into the shell to make it report `$PWD` on `PWD_OSC`. Ctrl+U first
+ *  clears whatever was half-typed at the prompt (readline keeps it for Ctrl+Y), and
+ *  the leading space keeps the line out of bash/zsh history where they ignore such
+ *  lines. `printf` and `$PWD` read the same in sh, bash, zsh and fish. */
+export function pwdProbeCommand(): string {
+  return `\x15 printf '\\033]${PWD_OSC};%s\\007' "$PWD"\r`;
+}
+
+/** The directory a probe answer carries — only an absolute path is trusted. */
+export function parsePwdAnswer(data: string): string | undefined {
+  const dir = data.replace(/[\r\n]+$/, '');
+  return dir.startsWith('/') ? dir : undefined;
+}
 
 /** The path an OSC 7 payload (`file://host/path`) reports, or `undefined`. */
 export function parseOsc7(data: string): string | undefined {

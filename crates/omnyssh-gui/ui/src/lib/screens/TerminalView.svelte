@@ -27,7 +27,14 @@
   } from '$lib/ipc/commands';
   import { shouldFadeTop } from './terminalFade';
   import { chunkBytes, isCopyShortcut, layoutFallback } from './terminalInput';
-  import { parseOsc7, parseTitleCwd, toSftpDir } from './terminalCwd';
+  import {
+    PWD_OSC,
+    parseOsc7,
+    parsePwdAnswer,
+    parseTitleCwd,
+    pwdProbeCommand,
+    toSftpDir
+  } from './terminalCwd';
   import { uploadToDir, type UploadStatus } from './terminalUpload';
   import { formatBytes } from '$lib/stores/sftp';
   import { isMac } from '$lib/platform';
@@ -83,10 +90,34 @@
   let stopDragDrop: (() => void) | undefined;
 
   // The shell's directory as it last reported it (see terminalCwd): OSC 7 when the
-  // shell emits it, else the `user@host: dir` window title. Unknown means home.
+  // shell emits it, else the `user@host: dir` window title. Unknown means the drop
+  // asks the shell (`probeDir`), and home if it can't.
   let titleDir = $state<string | undefined>(undefined);
   let osc7Dir = $state<string | undefined>(undefined);
-  const shellDir = $derived(osc7Dir ?? titleDir ?? '~');
+  const shellDir = $derived(osc7Dir ?? titleDir);
+
+  // How long a pwd probe waits for the shell's answer before settling for home.
+  const PROBE_TIMEOUT_MS = 2000;
+  let pwdWaiter: ((dir: string | undefined) => void) | undefined;
+
+  /** Ask the shell for its directory by typing the probe line (it shows in the
+   *  terminal). Skipped while a full-screen program (vim, less, htop) holds the
+   *  alternate screen — the line would land in it rather than at a prompt. */
+  function probeDir(): Promise<string | undefined> {
+    if (!term || termId == null || term.buffer.active.type === 'alternate') {
+      return Promise.resolve(undefined);
+    }
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => settle(undefined), PROBE_TIMEOUT_MS);
+      function settle(dir: string | undefined): void {
+        clearTimeout(timer);
+        if (pwdWaiter === settle) pwdWaiter = undefined;
+        resolve(dir);
+      }
+      pwdWaiter = settle;
+      sendInput(ENCODER.encode(pwdProbeCommand()));
+    });
+  }
 
   // Files dragged over / dropped onto this terminal go to `shellDir` over SFTP.
   let dragOver = $state(false);
@@ -117,10 +148,12 @@
   /** Queue an upload of `paths` into the shell's current directory. Drops run one
    *  after another, so the progress pill always describes a single batch. */
   function uploadDropped(paths: string[]): void {
-    const dir = shellDir;
+    const known = shellDir;
     uploadChain = uploadChain.then(async () => {
       if (destroyed) return;
       try {
+        const dir = known ?? (await probeDir()) ?? '~';
+        if (destroyed) return;
         const result = await uploadToDir(session.hostName, toSftpDir(dir), paths, (s) => {
           if (!destroyed) upload = s;
         });
@@ -194,6 +227,11 @@
         const dir = parseOsc7(data);
         if (dir) osc7Dir = dir;
         return false;
+      });
+      // The pwd probe's answer: consumed, so it never reaches the screen.
+      term.parser.registerOscHandler(PWD_OSC, (data) => {
+        pwdWaiter?.(parsePwdAnswer(data));
+        return true;
       });
       term.onTitleChange((title) => {
         // A title that names no directory (a running program's) keeps the last one.
@@ -347,7 +385,12 @@
       style="top: max(var(--titlebar-h), 0.75rem);"
     >
       <p class="rounded-md bg-surface-raised px-3 py-1.5 text-sm text-muted shadow">
-        Drop to upload to <span class="font-mono text-fg">{shellDir}</span>
+        Drop to upload to
+        {#if shellDir}
+          <span class="font-mono text-fg">{shellDir}</span>
+        {:else}
+          the shell's current folder
+        {/if}
       </p>
     </div>
   {/if}

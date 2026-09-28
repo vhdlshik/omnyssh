@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { baseName, joinRemote, parseOsc7, parseTitleCwd, toSftpDir } from './terminalCwd';
+import {
+  PWD_OSC,
+  baseName,
+  joinRemote,
+  parseOsc7,
+  parsePwdAnswer,
+  parseTitleCwd,
+  pwdProbeCommand,
+  toSftpDir
+} from './terminalCwd';
 
 describe('OSC 7 working directory', () => {
   it('takes the path of a file URL, with or without a host', () => {
@@ -56,5 +65,18 @@ describe('SFTP paths', () => {
     expect(baseName('C:\\Users\\me\\a.txt')).toBe('a.txt');
     expect(baseName('/home/me/dir/')).toBe('dir');
     expect(baseName('/')).toBeUndefined();
+  });
+});
+
+describe('pwd probe', () => {
+  it('types one line that clears the prompt and prints $PWD on the private OSC', () => {
+    expect(pwdProbeCommand()).toBe(`\x15 printf '\\033]${PWD_OSC};%s\\007' "$PWD"\r`);
+  });
+
+  it('accepts only an absolute path as the answer', () => {
+    expect(parsePwdAnswer('/home/me/My Files')).toBe('/home/me/My Files');
+    expect(parsePwdAnswer('/srv\n')).toBe('/srv');
+    expect(parsePwdAnswer('$PWD')).toBeUndefined();
+    expect(parsePwdAnswer('')).toBeUndefined();
   });
 });
