@@ -10,6 +10,7 @@
   import { streamerMode } from '$lib/stores/streamer';
   import { refreshInterval, REFRESH_OPTIONS } from '$lib/stores/settings';
   import { traySupport, trayBehavior } from '$lib/stores/tray';
+  import { rightClickCopyPaste, selectOverApps } from '$lib/stores/terminalMouse';
   import { isMac } from '$lib/platform';
   import { offerUpdate } from '$lib/stores/update';
   import { lastError } from '$lib/stores/notifications';
@@ -161,13 +162,34 @@
       </div>
     </Surface>
 
+    <!-- Terminal: mouse handling in terminal tabs (stores/terminalMouse). -->
+    <Surface class="p-5">
+      <h2 class="mb-3 text-sm font-semibold">Terminal</h2>
+      <div class="space-y-4">
+        {@render switchRow(
+          'Right-click copies and pastes',
+          'Right-click copies the selection, or pastes when nothing is selected. Replaces the context menu, and programs never see the right button.',
+          $rightClickCopyPaste,
+          true,
+          () => rightClickCopyPaste.toggle()
+        )}
+        {@render switchRow(
+          'Select text over any program',
+          `Dragging always selects text, even in programs that use the mouse, such as vim, htop or Claude Code. A click without a drag still reaches the program; ${isMac ? 'Option' : 'Shift'}+drag works either way.`,
+          $selectOverApps,
+          true,
+          () => selectOverApps.toggle()
+        )}
+      </div>
+    </Surface>
+
     <!-- Window: the tray keeps sessions and tunnels up with no window on screen. macOS
          has no minimize event to act on, and keeps minimized windows in the Dock. -->
     <Surface class="p-5">
       <h2 class="mb-3 text-sm font-semibold">Window</h2>
       <div class="space-y-4">
         {#if !isMac}
-          {@render traySwitch(
+          {@render switchRow(
             'Minimize to tray',
             $traySupport.available && !$traySupport.minimize
               ? 'Not on Wayland, which never tells an app its window was minimized.'
@@ -177,7 +199,7 @@
             () => trayBehavior.update({ minimizeToTray: !$trayBehavior.minimizeToTray })
           )}
         {/if}
-        {@render traySwitch(
+        {@render switchRow(
           isMac ? 'Close to the menu bar' : 'Close to tray',
           'Closing the window keeps OmnySSH running — terminals, transfers and tunnels stay connected. Quit from the icon.',
           $trayBehavior.closeToTray && $traySupport.available,
@@ -253,7 +275,7 @@
   </div>
 </section>
 
-{#snippet traySwitch(
+{#snippet switchRow(
   label: string,
   hint: string,
   on: boolean,

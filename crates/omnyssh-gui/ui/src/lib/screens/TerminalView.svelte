@@ -37,7 +37,9 @@
   } from './terminalCwd';
   import { uploadToDir, type UploadStatus } from './terminalUpload';
   import { formatBytes } from '$lib/stores/sftp';
-  import { isMac } from '$lib/platform';
+  import { isMac, isWindows } from '$lib/platform';
+  import { rightClickCopyPaste, selectOverApps } from '$lib/stores/terminalMouse';
+  import { attachMouseGestures } from './terminalGestures';
   import type { TerminalBytes } from '$lib/bindings';
 
   let { session, active }: { session: Session; active: boolean } = $props();
@@ -88,6 +90,20 @@
   let themeUnsub: (() => void) | undefined;
   let resizeObserver: ResizeObserver | undefined;
   let stopDragDrop: (() => void) | undefined;
+  let stopGestures: (() => void) | undefined;
+
+  /** Right-click paste. WebKitGTK has no clipboard read for a page, so on Linux the
+   *  webview pastes natively into the focused terminal (the same command Ctrl+Shift+V
+   *  falls back to); WebView2 and WKWebView read the clipboard, and `term.paste` keeps
+   *  bracketed paste for programs that asked for it. */
+  async function pasteClipboard(): Promise<void> {
+    if (!isMac && !isWindows) {
+      await terminalPaste();
+      return;
+    }
+    const text = await navigator.clipboard.readText();
+    if (text) term?.paste(text);
+  }
 
   // The shell's directory as it last reported it (see terminalCwd): OSC 7 when the
   // shell emits it, else the `user@host: dir` window title. Unknown means the drop
@@ -215,12 +231,23 @@
         fontFamily: MONO,
         fontSize: 13,
         cursorBlink: true,
-        scrollback: 5000
+        scrollback: 5000,
+        // Option+drag selects over a program that reads the mouse, as Shift does
+        // elsewhere; the select-over-apps gesture relies on it (see terminalGestures).
+        macOptionClickForcesSelection: true
       });
       fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
       term.open(container);
       term.onScroll(syncScrolled);
+      stopGestures = attachMouseGestures(container, term, {
+        isMac,
+        rightClickCopyPaste: () => get(rightClickCopyPaste),
+        selectOverApps: () => get(selectOverApps),
+        writeClipboard: (text) => navigator.clipboard.writeText(text),
+        pasteClipboard,
+        onError: (message) => lastError.set(message)
+      });
       // Track the shell's directory for drag-and-drop uploads. Neither handler
       // consumes the sequence, so xterm's own title handling still runs.
       term.parser.registerOscHandler(7, (data) => {
@@ -344,6 +371,7 @@
     themeUnsub?.();
     resizeObserver?.disconnect();
     stopDragDrop?.();
+    stopGestures?.();
     if (noticeTimer !== undefined) clearTimeout(noticeTimer);
     // Idempotent: a remote-exit teardown already dropped this id backend-side (§3.4).
     if (termId != null) void terminalClose(termId).catch(() => {});
