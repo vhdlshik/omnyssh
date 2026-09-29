@@ -543,7 +543,12 @@ export type FilePreview = { sessionId: number; path: string; content: string }
  * (tech-gui.md §3.4). `hasKey` reports whether an identity file is configured;
  * the key path itself never crosses the boundary.
  */
-export type HostDto = { name: string; hostname: string; user: string; port: number; tags: string[]; notes?: string | null; source: HostSourceDto; hasKey: boolean; passwordAuthDisabled?: boolean | null; monitoring: MonitorModeDto; monitorPort?: number | null; localForwards: LocalForwardDto[]; tunnelAutostart: boolean; forwardAgent: boolean }
+export type HostDto = { name: string; hostname: string; user: string; port: number; tags: string[]; notes?: string | null; source: HostSourceDto; hasKey: boolean; passwordAuthDisabled?: boolean | null; monitoring: MonitorModeDto; monitorPort?: number | null; localForwards: LocalForwardDto[]; tunnelAutostart: boolean; forwardAgent: boolean; 
+/**
+ * The group the dashboard lists the host under (a `#--- Name ---` heading in
+ * `~/.ssh/config`); none for an ungrouped host.
+ */
+group?: string | null }
 /**
  * Inbound host form payload for `save_host` (tech-gui.md §4.1, Stage 4.1). Always
  * builds a **manual** `Host`: editing an SSH-config import saves a copy that shadows

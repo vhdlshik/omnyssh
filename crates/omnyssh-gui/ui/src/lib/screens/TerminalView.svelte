@@ -282,8 +282,11 @@
         const dir = parseTitleCwd(title);
         if (dir) titleDir = dir;
       });
-      void getCurrentWebview()
-        .onDragDropEvent((event) => {
+      // Drops are an extra: a webview that cannot report them (no Tauri runtime) must
+      // not stop the terminal itself from opening.
+      void Promise.resolve()
+        .then(() => getCurrentWebview())
+        .then((webview) => webview.onDragDropEvent((event) => {
           const p = event.payload;
           if (p.type === 'leave') {
             dragOver = false;
@@ -296,7 +299,7 @@
           } else {
             dragOver = dropMode !== 'none' && termId != null && overTerminal(p.position);
           }
-        })
+        }))
         .then((unlisten) => {
           if (destroyed) unlisten();
           else stopDragDrop = unlisten;

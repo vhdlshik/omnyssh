@@ -71,6 +71,11 @@ pub struct Host {
     /// Free-text notes about this host.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// The group the host is listed under. `~/.ssh/config` sets it with a comment
+    /// heading such as `#---- Production ----` above the hosts; a hosts.toml entry
+    /// can set it with `group = "..."`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     /// Where this entry came from.
     #[serde(default)]
     pub source: HostSource,
@@ -145,6 +150,7 @@ impl Default for Host {
             proxy_jump: None,
             tags: Vec::new(),
             notes: None,
+            group: None,
             source: HostSource::default(),
             original_ssh_host: None,
             monitoring: MonitorMode::default(),

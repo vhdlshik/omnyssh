@@ -9,7 +9,15 @@
   import { get } from 'svelte/store';
   import type { HostDto, HostInputDto } from '$lib/bindings';
   import { Surface, Chip, StatusDot, Icon, Button, statusToken } from '$lib/theme';
-  import { serverCards, filterHosts, forwardListen, forwardTarget, QUICK_ACTIONS } from './serverCard';
+  import {
+    serverCards,
+    filterHosts,
+    forwardListen,
+    forwardTarget,
+    QUICK_ACTIONS,
+    type ServerCard
+  } from './serverCard';
+  import { groupCards, hasGroups, foldedGroups } from './hostGroups';
   import { spawnSession } from '$lib/stores/navigation';
   import { streamerMode, displayHostname } from '$lib/stores/streamer';
   import { hosts } from '$lib/stores/hosts';
@@ -39,6 +47,18 @@
   let searchOpen = $state(false);
   let searchInput = $state<HTMLInputElement>();
   const visibleCards = $derived(filterHosts($serverCards, query));
+
+  // Groups from `#--- Name ---` headings in ~/.ssh/config fold under their headers. A
+  // search opens every group that has a match, so nothing it finds is folded away.
+  const groups = $derived(groupCards(visibleCards));
+  const grouped = $derived(hasGroups(groups));
+  const searching = $derived(query.trim() !== '');
+  const allFolded = $derived(groups.every((g) => $foldedGroups.has(g.key)));
+  const cardGrid = 'grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(19rem,1fr))]';
+  const groupHeader =
+    'flex w-full items-center gap-2.5 rounded-lg border-b border-default px-2 py-2 text-left text-sm ' +
+    'text-muted transition hover:bg-surface-inset disabled:cursor-default disabled:hover:bg-transparent ' +
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
 
   function toggleSearch(): void {
     searchOpen = !searchOpen;
@@ -171,6 +191,18 @@
           <Icon name={searchOpen ? 'close' : 'search'} size={15} />
         </button>
       </div>
+      {#if hasGroups(groupCards($serverCards))}
+        <!-- Fold or unfold every group at once. -->
+        <button
+          type="button"
+          class={roundBtn}
+          title={allFolded ? 'Expand all groups' : 'Collapse all groups'}
+          aria-label={allFolded ? 'Expand all groups' : 'Collapse all groups'}
+          onclick={() => foldedGroups.setAll(groups.map((g) => g.key), !allFolded)}
+        >
+          <Icon name={allFolded ? 'expandAll' : 'collapseAll'} size={15} />
+        </button>
+      {/if}
       <!-- Force an immediate metric refresh of every host, like the TUI's `r` (also the
            `r` hotkey). Spins while in flight for feedback. -->
       <button
@@ -206,227 +238,269 @@
       <p class="text-sm text-muted">No hosts match “{query}”.</p>
     </div>
   {:else}
-    <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(19rem,1fr))]">
-      {#each visibleCards as card, i (i)}
-        <Surface class="flex flex-col gap-4 p-5">
-          <!-- Identity, then the actions on their own row so the name and address
-               stay readable at any card width (a full row instead of sharing it). -->
-          <div class="flex flex-col gap-3">
-            <div class="flex min-w-0 items-start gap-2.5">
-              <span class="mt-1 shrink-0">
-                <StatusDot status={card.overall} size={9} label="{card.host.name} status" />
-              </span>
-              <div class="min-w-0">
-                <div class="flex min-w-0 items-center gap-2">
-                  <span class="truncate font-medium" title={card.host.name}>{card.host.name}</span>
-                  {#if card.host.source === 'sshConfig'}
-                    <span
-                      class="shrink-0 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
-                      title="Imported from ~/.ssh/config — editing saves your own copy, which takes priority"
-                    >
-                      ssh config
-                    </span>
-                  {/if}
-                  <!-- Auth-state reflection (tech-gui.md §4.2): key-only once password
-                       auth is disabled, otherwise a plain key badge when a key exists. -->
-                  {#if card.host.passwordAuthDisabled}
-                    <span
-                      class="inline-flex shrink-0 items-center gap-1 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
-                      title="Password authentication disabled — key only"
-                    >
-                      <Icon name="shield" size={10} />
-                      key-only
-                    </span>
-                  {:else if card.host.hasKey}
-                    <span
-                      class="inline-flex shrink-0 items-center gap-1 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
-                      title="Key authentication configured"
-                    >
-                      <Icon name="key" size={10} />
-                      key
-                    </span>
-                  {/if}
-                </div>
-                <div class="truncate font-mono text-xs text-faint">
-                  {card.host.user}@{displayHostname(card.host.hostname, $streamerMode)}:{card.host
-                    .port}
-                </div>
-              </div>
-            </div>
-            <div class="flex flex-wrap items-center gap-1.5">
-              {#each QUICK_ACTIONS as action (action.id)}
-                <button
-                  type="button"
-                  class={pill}
-                  title="{action.label} on {card.host.name}"
-                  onclick={() => spawnSession(action.kind, card.host.name)}
-                >
-                  <Icon name={action.kind} size={13} />
-                  {action.label}
-                </button>
-              {/each}
-              <!-- Key setup stays manual-only even though edit no longer is: it records
-                   `key_setup_date`/`password_auth_disabled` through `save_hosts`, which
-                   keeps manual entries only — on an import that outcome would be dropped.
-                   Adopt the host first, then set up its key. -->
-              {#if card.host.source === 'manual' && !card.host.hasKey}
-                <button
-                  type="button"
-                  class={iconBtn}
-                  title="Set up an SSH key for {card.host.name}"
-                  aria-label="Set up an SSH key for {card.host.name}"
-                  onclick={() => setupKey(card.host)}
-                >
-                  <Icon name="key" size={14} />
-                </button>
-              {/if}
-              <!-- Editing an import adopts it into hosts.toml (§4.2); ~/.ssh/config is
-                   never written, so the action is offered whatever the source. Delete
-                   stays manual-only: there is nothing of an import to remove here. -->
-              <button
-                type="button"
-                class={iconBtn}
-                title="Edit {card.host.name}"
-                aria-label="Edit {card.host.name}"
-                onclick={() => (dialog = { kind: 'edit', host: card.host })}
-              >
-                <Icon name="edit" size={14} />
-              </button>
-              {#if card.host.source === 'manual'}
-                <button
-                  type="button"
-                  class={iconBtn}
-                  title="Delete {card.host.name}"
-                  aria-label="Delete {card.host.name}"
-                  onclick={() => (dialog = { kind: 'delete', host: card.host })}
-                >
-                  <Icon name="trash" size={14} />
-                </button>
-              {/if}
-            </div>
-          </div>
-
-          <!-- Reachability, live metrics, or an offline state -->
-          {#if card.reachability}
-            <div
-              class="rounded-lg bg-surface-inset px-3 py-3 text-center text-xs"
-              style="color: {statusToken(card.overall)};"
+    {#if !grouped}
+      <div class={cardGrid}>
+        {#each visibleCards as card, i (i)}
+          {@render cardView(card)}
+        {/each}
+      </div>
+    {:else}
+      <div class="space-y-3">
+        {#each groups as group (group.key)}
+          {@const open = searching || !$foldedGroups.has(group.key)}
+          <div>
+            <button
+              type="button"
+              class={groupHeader}
+              aria-expanded={open}
+              onclick={() => foldedGroups.toggle(group.key)}
+              disabled={searching}
             >
-              {card.reachability}{card.host.monitorPort ? ` · port ${card.host.monitorPort}` : ''}
-            </div>
-          {:else if card.offline}
-            <div class="rounded-lg bg-surface-inset px-3 py-3 text-center text-xs text-faint">offline</div>
-          {:else}
-            <div class="space-y-2">
-              {#each card.metricRows as row (row.label)}
-                <div class="flex items-center gap-3">
-                  <span class="w-9 shrink-0 text-[11px] uppercase tracking-wider text-faint">{row.label}</span>
-                  <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-inset">
-                    {#if row.percent != null}
-                      <div
-                        class="h-full rounded-full"
-                        style="width: {Math.min(row.percent, 100)}%; background-color: {statusToken(row.status)};"
-                      ></div>
-                    {/if}
-                  </div>
-                  <span
-                    class="w-10 shrink-0 text-right text-xs tabular-nums {row.percent == null
-                      ? 'text-faint'
-                      : 'text-muted'}"
-                  >
-                    {row.percent != null ? `${Math.round(row.percent)}%` : '—'}
-                  </span>
-                </div>
-              {/each}
-            </div>
-
-            {#if card.uptime || card.osInfo}
-              <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-                {#if card.uptime}<span>up {card.uptime}</span>{/if}
-                {#if card.uptime && card.osInfo}<span class="text-faint">·</span>{/if}
-                {#if card.osInfo}<span class="min-w-0 truncate">{card.osInfo}</span>{/if}
-              </div>
-            {/if}
-
-            {#if card.topProcesses.length}
-              <ul class="space-y-1">
-                {#each card.topProcesses as proc, p (p)}
-                  <li class="flex items-center justify-between gap-3 text-xs">
-                    <span class="min-w-0 truncate font-mono text-muted">{proc.name}</span>
-                    <span class="shrink-0 tabular-nums text-faint">{Math.round(proc.cpuPercent)}%</span>
-                  </li>
-                {/each}
-              </ul>
-            {/if}
-          {/if}
-
-          <!-- Why it is down. It can name hosts and addresses, so streamer mode keeps it off screen. -->
-          {#if card.failure}
-            <p class="break-words text-xs text-status-crit">
-              {$streamerMode ? 'Details hidden in streamer mode' : card.failure}
-            </p>
-          {/if}
-
-          <!-- Detected services -->
-          {#if card.detectedServices.length}
-            <div class="flex flex-wrap gap-1.5">
-              {#each card.detectedServices as service (service.kind)}
-                <Chip>{service.detail ? `${service.name} · ${service.detail}` : service.name}</Chip>
-              {/each}
-            </div>
-          {:else if card.servicesError}
-            <div class="text-xs text-faint">Service scan unavailable</div>
-          {/if}
-
-          <!-- Port forwarding: one tunnel per host carries every forward. -->
-          {#if card.tunnel}
-            {@const tunnel = card.tunnel}
-            <div class="space-y-2 border-t border-default pt-3">
-              <div class="flex items-center gap-2">
-                <span class="text-faint"><Icon name="tunnel" size={13} /></span>
-                <StatusDot status={tunnel.dot} size={7} label="{card.host.name} tunnel {tunnel.label}" />
-                <span class="text-xs text-muted">{tunnel.label}</span>
-                {#if tunnel.autostart}
-                  <span
-                    class="shrink-0 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
-                    title="Starts when OmnySSH opens"
-                  >
-                    auto
-                  </span>
+              <span class="inline-flex transition-transform {open ? 'rotate-90' : ''}">
+                <Icon name="chevron" size={14} />
+              </span>
+              <span class="truncate font-semibold text-fg">{group.name ?? 'Ungrouped'}</span>
+              <span class="text-xs text-faint tabular-nums">{group.cards.length}</span>
+              <span class="ml-auto flex shrink-0 items-center gap-3 text-xs text-muted tabular-nums">
+                {#if group.online > 0}
+                  <span class="flex items-center gap-1.5"><StatusDot status="ok" size={7} />{group.online}</span>
                 {/if}
-                <button
-                  type="button"
-                  class="{pill} ml-auto"
-                  title="{tunnel.running ? 'Stop' : 'Start'} the tunnel to {card.host.name}"
-                  aria-label="{tunnel.running ? 'Stop' : 'Start'} the tunnel to {card.host.name}"
-                  onclick={() => toggleTunnel(card.host.name, tunnel.running)}
-                >
-                  <Icon name={tunnel.running ? 'close' : 'play'} size={12} />
-                  {tunnel.running ? 'Stop' : 'Start'}
-                </button>
-              </div>
-              <ul class="space-y-1">
-                {#each tunnel.forwards as forward, f (f)}
-                  <li class="flex min-w-0 items-center gap-1.5 font-mono text-xs text-muted">
-                    <span class="truncate">{forwardListen(forward, $streamerMode)}</span>
-                    <span class="shrink-0 text-faint">→</span>
-                    <span class="truncate">{forwardTarget(forward, $streamerMode)}</span>
-                  </li>
+                {#if group.down > 0}
+                  <span class="flex items-center gap-1.5"><StatusDot status="off" size={7} />{group.down}</span>
+                {/if}
+              </span>
+            </button>
+            {#if open}
+              <div class="{cardGrid} mt-3">
+                {#each group.cards as card, i (i)}
+                  {@render cardView(card)}
                 {/each}
-              </ul>
-              <!-- The reason names hosts and addresses, so streamer mode keeps it off screen. -->
-              {#if tunnel.message}
-                <p class="break-words text-xs {tunnel.running ? 'text-faint' : 'text-status-crit'}">
-                  {$streamerMode ? 'Details hidden in streamer mode' : tunnel.message}
-                </p>
-              {/if}
-            </div>
-          {/if}
-        </Surface>
-      {/each}
-    </div>
+              </div>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
   {/if}
 </section>
+
+{#snippet cardView(card: ServerCard)}
+  <Surface class="flex flex-col gap-4 p-5">
+    <!-- Identity, then the actions on their own row so the name and address
+         stay readable at any card width (a full row instead of sharing it). -->
+    <div class="flex flex-col gap-3">
+      <div class="flex min-w-0 items-start gap-2.5">
+        <span class="mt-1 shrink-0">
+          <StatusDot status={card.overall} size={9} label="{card.host.name} status" />
+        </span>
+        <div class="min-w-0">
+          <div class="flex min-w-0 items-center gap-2">
+            <span class="truncate font-medium" title={card.host.name}>{card.host.name}</span>
+            {#if card.host.source === 'sshConfig'}
+              <span
+                class="shrink-0 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
+                title="Imported from ~/.ssh/config — editing saves your own copy, which takes priority"
+              >
+                ssh config
+              </span>
+            {/if}
+            <!-- Auth-state reflection (tech-gui.md §4.2): key-only once password
+                 auth is disabled, otherwise a plain key badge when a key exists. -->
+            {#if card.host.passwordAuthDisabled}
+              <span
+                class="inline-flex shrink-0 items-center gap-1 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
+                title="Password authentication disabled — key only"
+              >
+                <Icon name="shield" size={10} />
+                key-only
+              </span>
+            {:else if card.host.hasKey}
+              <span
+                class="inline-flex shrink-0 items-center gap-1 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
+                title="Key authentication configured"
+              >
+                <Icon name="key" size={10} />
+                key
+              </span>
+            {/if}
+          </div>
+          <div class="truncate font-mono text-xs text-faint">
+            {card.host.user}@{displayHostname(card.host.hostname, $streamerMode)}:{card.host
+              .port}
+          </div>
+        </div>
+      </div>
+      <div class="flex flex-wrap items-center gap-1.5">
+        {#each QUICK_ACTIONS as action (action.id)}
+          <button
+            type="button"
+            class={pill}
+            title="{action.label} on {card.host.name}"
+            onclick={() => spawnSession(action.kind, card.host.name)}
+          >
+            <Icon name={action.kind} size={13} />
+            {action.label}
+          </button>
+        {/each}
+        <!-- Key setup stays manual-only even though edit no longer is: it records
+             `key_setup_date`/`password_auth_disabled` through `save_hosts`, which
+             keeps manual entries only — on an import that outcome would be dropped.
+             Adopt the host first, then set up its key. -->
+        {#if card.host.source === 'manual' && !card.host.hasKey}
+          <button
+            type="button"
+            class={iconBtn}
+            title="Set up an SSH key for {card.host.name}"
+            aria-label="Set up an SSH key for {card.host.name}"
+            onclick={() => setupKey(card.host)}
+          >
+            <Icon name="key" size={14} />
+          </button>
+        {/if}
+        <!-- Editing an import adopts it into hosts.toml (§4.2); ~/.ssh/config is
+             never written, so the action is offered whatever the source. Delete
+             stays manual-only: there is nothing of an import to remove here. -->
+        <button
+          type="button"
+          class={iconBtn}
+          title="Edit {card.host.name}"
+          aria-label="Edit {card.host.name}"
+          onclick={() => (dialog = { kind: 'edit', host: card.host })}
+        >
+          <Icon name="edit" size={14} />
+        </button>
+        {#if card.host.source === 'manual'}
+          <button
+            type="button"
+            class={iconBtn}
+            title="Delete {card.host.name}"
+            aria-label="Delete {card.host.name}"
+            onclick={() => (dialog = { kind: 'delete', host: card.host })}
+          >
+            <Icon name="trash" size={14} />
+          </button>
+        {/if}
+      </div>
+    </div>
+
+    <!-- Reachability, live metrics, or an offline state -->
+    {#if card.reachability}
+      <div
+        class="rounded-lg bg-surface-inset px-3 py-3 text-center text-xs"
+        style="color: {statusToken(card.overall)};"
+      >
+        {card.reachability}{card.host.monitorPort ? ` · port ${card.host.monitorPort}` : ''}
+      </div>
+    {:else if card.offline}
+      <div class="rounded-lg bg-surface-inset px-3 py-3 text-center text-xs text-faint">offline</div>
+    {:else}
+      <div class="space-y-2">
+        {#each card.metricRows as row (row.label)}
+          <div class="flex items-center gap-3">
+            <span class="w-9 shrink-0 text-[11px] uppercase tracking-wider text-faint">{row.label}</span>
+            <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-inset">
+              {#if row.percent != null}
+                <div
+                  class="h-full rounded-full"
+                  style="width: {Math.min(row.percent, 100)}%; background-color: {statusToken(row.status)};"
+                ></div>
+              {/if}
+            </div>
+            <span
+              class="w-10 shrink-0 text-right text-xs tabular-nums {row.percent == null
+                ? 'text-faint'
+                : 'text-muted'}"
+            >
+              {row.percent != null ? `${Math.round(row.percent)}%` : '—'}
+            </span>
+          </div>
+        {/each}
+      </div>
+
+      {#if card.uptime || card.osInfo}
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+          {#if card.uptime}<span>up {card.uptime}</span>{/if}
+          {#if card.uptime && card.osInfo}<span class="text-faint">·</span>{/if}
+          {#if card.osInfo}<span class="min-w-0 truncate">{card.osInfo}</span>{/if}
+        </div>
+      {/if}
+
+      {#if card.topProcesses.length}
+        <ul class="space-y-1">
+          {#each card.topProcesses as proc, p (p)}
+            <li class="flex items-center justify-between gap-3 text-xs">
+              <span class="min-w-0 truncate font-mono text-muted">{proc.name}</span>
+              <span class="shrink-0 tabular-nums text-faint">{Math.round(proc.cpuPercent)}%</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    {/if}
+
+    <!-- Why it is down. It can name hosts and addresses, so streamer mode keeps it off screen. -->
+    {#if card.failure}
+      <p class="break-words text-xs text-status-crit">
+        {$streamerMode ? 'Details hidden in streamer mode' : card.failure}
+      </p>
+    {/if}
+
+    <!-- Detected services -->
+    {#if card.detectedServices.length}
+      <div class="flex flex-wrap gap-1.5">
+        {#each card.detectedServices as service (service.kind)}
+          <Chip>{service.detail ? `${service.name} · ${service.detail}` : service.name}</Chip>
+        {/each}
+      </div>
+    {:else if card.servicesError}
+      <div class="text-xs text-faint">Service scan unavailable</div>
+    {/if}
+
+    <!-- Port forwarding: one tunnel per host carries every forward. -->
+    {#if card.tunnel}
+      {@const tunnel = card.tunnel}
+      <div class="space-y-2 border-t border-default pt-3">
+        <div class="flex items-center gap-2">
+          <span class="text-faint"><Icon name="tunnel" size={13} /></span>
+          <StatusDot status={tunnel.dot} size={7} label="{card.host.name} tunnel {tunnel.label}" />
+          <span class="text-xs text-muted">{tunnel.label}</span>
+          {#if tunnel.autostart}
+            <span
+              class="shrink-0 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
+              title="Starts when OmnySSH opens"
+            >
+              auto
+            </span>
+          {/if}
+          <button
+            type="button"
+            class="{pill} ml-auto"
+            title="{tunnel.running ? 'Stop' : 'Start'} the tunnel to {card.host.name}"
+            aria-label="{tunnel.running ? 'Stop' : 'Start'} the tunnel to {card.host.name}"
+            onclick={() => toggleTunnel(card.host.name, tunnel.running)}
+          >
+            <Icon name={tunnel.running ? 'close' : 'play'} size={12} />
+            {tunnel.running ? 'Stop' : 'Start'}
+          </button>
+        </div>
+        <ul class="space-y-1">
+          {#each tunnel.forwards as forward, f (f)}
+            <li class="flex min-w-0 items-center gap-1.5 font-mono text-xs text-muted">
+              <span class="truncate">{forwardListen(forward, $streamerMode)}</span>
+              <span class="shrink-0 text-faint">→</span>
+              <span class="truncate">{forwardTarget(forward, $streamerMode)}</span>
+            </li>
+          {/each}
+        </ul>
+        <!-- The reason names hosts and addresses, so streamer mode keeps it off screen. -->
+        {#if tunnel.message}
+          <p class="break-words text-xs {tunnel.running ? 'text-faint' : 'text-status-crit'}">
+            {$streamerMode ? 'Details hidden in streamer mode' : tunnel.message}
+          </p>
+        {/if}
+      </div>
+    {/if}
+  </Surface>
+{/snippet}
 
 {#if dialog?.kind === 'add'}
   <HostEditor mode="add" initial={emptyForm()} onSubmit={submit} onCancel={() => (dialog = null)} />

@@ -29,4 +29,7 @@ export type IconName =
   | 'star'
   | 'tunnel'
   | 'monitor'
-  | 'plug';
+  | 'plug'
+  | 'chevron'
+  | 'collapseAll'
+  | 'expandAll';

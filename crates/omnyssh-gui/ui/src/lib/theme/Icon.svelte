@@ -117,5 +117,13 @@
     <path d="M15 2v5" />
     <path d="M6 7h12v4a6 6 0 0 1-12 0z" />
     <path d="M12 17v5" />
+  {:else if name === 'chevron'}
+    <polyline points="9 6 15 12 9 18" />
+  {:else if name === 'collapseAll'}
+    <polyline points="7 20 12 15 17 20" />
+    <polyline points="7 4 12 9 17 4" />
+  {:else if name === 'expandAll'}
+    <polyline points="7 15 12 20 17 15" />
+    <polyline points="7 9 12 4 17 9" />
   {/if}
 </svg>

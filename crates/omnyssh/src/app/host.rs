@@ -285,6 +285,7 @@ impl HostForm {
             proxy_jump: None,
             tags,
             notes,
+            group: None,
             source,
             original_ssh_host: None,
             monitoring,
@@ -573,6 +574,8 @@ impl App {
                         // an imported host would otherwise drop its bastion and
                         // the saved copy would try to connect direct.
                         host.proxy_jump = old_host.and_then(|h| h.proxy_jump.clone());
+                        // Nor has the group, which an edit must not drop either.
+                        host.group = old_host.and_then(|h| h.group.clone());
 
                         // An import is adopted under the name it was imported by; a copy
                         // already adopted keeps the one it carries. Dropping it brings the

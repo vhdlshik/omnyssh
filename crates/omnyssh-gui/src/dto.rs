@@ -73,6 +73,10 @@ pub struct HostDto {
     pub local_forwards: Vec<LocalForwardDto>,
     pub tunnel_autostart: bool,
     pub forward_agent: bool,
+    /// The group the dashboard lists the host under (a `#--- Name ---` heading in
+    /// `~/.ssh/config`); none for an ungrouped host.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 /// One `ssh -L` rule (tech-gui.md §4.1): listen on `bindAddress:bindPort` here and
@@ -376,6 +380,7 @@ impl From<&Host> for HostDto {
             local_forwards: host.local_forwards.iter().map(Into::into).collect(),
             tunnel_autostart: host.tunnel_autostart,
             forward_agent: host.forward_agent,
+            group: host.group.clone(),
         }
     }
 }
@@ -453,6 +458,7 @@ impl From<HostInputDto> for Host {
             proxy_jump: non_empty(dto.proxy_jump),
             tags: dto.tags,
             notes: non_empty(dto.notes),
+            group: None,
             source: HostSource::Manual,
             original_ssh_host: None,
             monitoring,
