@@ -578,8 +578,10 @@ mod tests {
     #[test]
     #[ignore]
     fn a_serial_port_carries_bytes_both_ways() {
-        let (Ok(a), Ok(b)) = (std::env::var("OMNY_SERIAL_A"), std::env::var("OMNY_SERIAL_B"))
-        else {
+        let (Ok(a), Ok(b)) = (
+            std::env::var("OMNY_SERIAL_A"),
+            std::env::var("OMNY_SERIAL_B"),
+        ) else {
             panic!("set OMNY_SERIAL_A and OMNY_SERIAL_B to the two ends of a serial link");
         };
         // `plausible_serial_port` wants a device path; resolve the socat links to /dev/pts/N.
@@ -599,7 +601,9 @@ mod tests {
             .expect("far end");
 
         far.write_all(b"hello from the device\r\n").unwrap();
-        let got = rx.recv_timeout(Duration::from_secs(2)).expect("device output");
+        let got = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("device output");
         assert!(String::from_utf8_lossy(&got).contains("hello"));
 
         session.write(b"AT\r");
