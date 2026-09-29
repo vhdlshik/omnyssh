@@ -13,8 +13,11 @@
     sessionLabel,
     sessionTitle,
     sessionStatusDot,
+    sessionIcon,
     type SessionKind
   } from '$lib/stores/sessions';
+  import LocalPicker from '$lib/screens/LocalPicker.svelte';
+  import type { LocalTargetDto } from '$lib/bindings';
   import { sidebarCollapsed } from '$lib/stores/ui';
   import { spawnSession, closeSession } from '$lib/stores/navigation';
   import { palette } from '$lib/stores/palette';
@@ -25,6 +28,13 @@
   async function pickAndSpawn(kind: SessionKind): Promise<void> {
     const host = await palette.pickHost();
     if (host) spawnSession(kind, host.name);
+  }
+
+  // A terminal on this machine needs no host: its own picker names a shell or port.
+  let pickingLocal = $state(false);
+  function spawnLocal(target: LocalTargetDto, label: string): void {
+    pickingLocal = false;
+    spawnSession('terminal', label, target);
   }
 
   type Selector = { kind: 'dashboard' | 'snippets'; label: string; icon: IconName };
@@ -99,6 +109,17 @@
           </button>
         </li>
       {/each}
+      <li>
+        <button
+          type="button"
+          class="{rowBase} {focusRing} {rowState(false)} {$sidebarCollapsed ? 'justify-center' : ''}"
+          title="Local terminal"
+          onclick={() => (pickingLocal = true)}
+        >
+          <Icon name="monitor" />
+          {#if !$sidebarCollapsed}<span class="truncate">Local</span>{/if}
+        </button>
+      </li>
     </ul>
 
     {#if $sessions.length > 0}
@@ -121,14 +142,14 @@
               >
                 {#if $sidebarCollapsed}
                   <span class="relative inline-flex shrink-0">
-                    <Icon name={s.kind} />
+                    <Icon name={sessionIcon(s)} />
                     <span class="absolute -right-1 -top-1">
                       <StatusDot status={sessionStatusDot[s.status]} size={7} />
                     </span>
                   </span>
                 {:else}
                   <StatusDot status={sessionStatusDot[s.status]} />
-                  <Icon name={s.kind} size={16} />
+                  <Icon name={sessionIcon(s)} size={16} />
                   <span class="min-w-0 flex-1 truncate">{sessionLabel(s)}</span>
                 {/if}
               </button>
@@ -182,3 +203,7 @@
     </button>
   </footer>
 </aside>
+
+{#if pickingLocal}
+  <LocalPicker onPick={spawnLocal} onCancel={() => (pickingLocal = false)} />
+{/if}

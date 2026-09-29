@@ -41,6 +41,14 @@ tauri-plugin-updater = "2"
 # Opens external URLs (the GitHub repo + Telegram channel from the support dialog) in
 # the user's default browser; the webview itself must never navigate away from the app.
 tauri-plugin-opener = "2"
+# Local terminals: the platform's own pseudo-terminal (a PTY on Unix, ConPTY on
+# Windows) for the shells the machine has.
+portable-pty = "0.9"
+# The home directory local shells start in.
+dirs = { workspace = true }
+# Serial consoles. No libudev: ports are listed from sysfs on Linux, so the .deb and
+# AppImage gain no dependency and CI needs no extra -dev package.
+serialport = { version = "4", default-features = false }
 # Restores the window's size and position between launches. Registered Rust-side only,
 # so none of its commands are granted to the frontend.
 tauri-plugin-window-state = "2"

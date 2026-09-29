@@ -142,6 +142,43 @@ pub struct TraySupportDto {
     pub minimize: bool,
 }
 
+/// A shell this machine can start in a local terminal. `id` is what `local_open` takes
+/// back; `detail` is the program's path, shown under the name.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalShellDto {
+    pub id: String,
+    pub name: String,
+    pub detail: String,
+}
+
+/// A serial port: its device name (`/dev/ttyUSB0`, `COM3`) and what the system knows
+/// about the device behind it (empty when nothing).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SerialPortDto {
+    pub name: String,
+    pub detail: String,
+}
+
+/// Everything the local-terminal picker offers.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalTargetsDto {
+    pub shells: Vec<LocalShellDto>,
+    pub serial_ports: Vec<SerialPortDto>,
+    pub baud_rates: Vec<u32>,
+}
+
+/// What a local terminal connects to: one of the detected shells, by id, or a serial
+/// port at a speed (8N1, no flow control).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LocalTargetDto {
+    Shell { id: String },
+    Serial { port: String, baud: u32 },
+}
+
 /// Live connection state for a host (tech-gui.md §4.1). Internally tagged so the
 /// frontend consumes a discriminated union keyed on `kind`.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
