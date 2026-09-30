@@ -6,6 +6,11 @@
 //! Wildcard `Host` and `Match` blocks are skipped, except that a `ForwardAgent no`
 //! there, or in the global section, keeps the agent from every host after it.
 //!
+//! A comment line made of dashes around a name, such as `#---- Production ----`,
+//! starts a group: every host after it is listed under that name until the next
+//! such line. A file pulled in by `Include` starts in the group of the line that
+//! included it, and a heading inside it holds for the rest of that file only.
+//!
 //! The original file is **never modified**.
 
 use std::collections::HashSet;
@@ -28,6 +33,7 @@ pub fn parse_ssh_config(content: &str) -> Vec<Host> {
         0,
         &mut visited,
         &mut false,
+        None,
     )
 }
 
@@ -49,6 +55,7 @@ pub fn load_from_file(path: &Path) -> anyhow::Result<Vec<Host>> {
         0,
         &mut visited,
         &mut false,
+        None,
     ))
 }
 
@@ -72,6 +79,7 @@ fn parse_content(
     depth: usize,
     visited: &mut HashSet<PathBuf>,
     agent_barred: &mut bool,
+    mut group: Option<String>,
 ) -> Vec<Host> {
     if depth > 3 {
         return Vec::new();
@@ -91,6 +99,10 @@ fn parse_content(
     let mut identities_seen = false;
 
     for raw_line in content.lines() {
+        if let Some(name) = group_heading(raw_line) {
+            group = Some(name);
+            continue;
+        }
         let line = strip_comment(raw_line).trim().to_string();
         if line.is_empty() {
             continue;
@@ -114,6 +126,7 @@ fn parse_content(
                     let h = Host {
                         name: value.to_string(),
                         source: HostSource::SshConfig,
+                        group: group.clone(),
                         ..Host::default()
                     };
                     current = Some(h);
@@ -237,6 +250,7 @@ fn parse_content(
                                 depth + 1,
                                 visited,
                                 agent_barred,
+                                group.clone(),
                             )),
                             Err(e) => {
                                 tracing::warn!(path = %path.display(), error = %e, "Include file unreadable")
@@ -263,6 +277,20 @@ fn parse_content(
     }
 
     hosts
+}
+
+/// The group a heading comment starts: `#` and at least two dashes, a name, then at
+/// least two dashes (`#--- Production ---`, `# -- DB -- `). A line of dashes alone, or
+/// an ordinary comment, is not a heading.
+fn group_heading(line: &str) -> Option<String> {
+    let rest = line.trim().strip_prefix('#')?.trim();
+    let lead = rest.len() - rest.trim_start_matches('-').len();
+    let trail = rest.len() - rest.trim_end_matches('-').len();
+    if lead < 2 || trail < 2 || lead + trail >= rest.len() {
+        return None;
+    }
+    let name = rest[lead..rest.len() - trail].trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Parses a `LocalForward` value: `[bind_address:]port host:hostport`, the two
@@ -377,6 +405,78 @@ fn expand_include_glob(pattern: &str) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn groups(cfg: &str) -> Vec<(String, Option<String>)> {
+        parse_ssh_config(cfg)
+            .into_iter()
+            .map(|h| (h.name, h.group))
+            .collect()
+    }
+
+    #[test]
+    fn a_dashed_heading_groups_the_hosts_after_it() {
+        let cfg = "Host loose\n\
+                   #------ Production ------\n\
+                   Host web\n  HostName 10.0.0.1\n\
+                   # a plain comment\n\
+                   Host db\n\
+                   #-- Lab --\n\
+                   Host pi\n";
+        let g = |s: &str| Some(s.to_string());
+        assert_eq!(
+            groups(cfg),
+            [
+                ("loose".into(), None),
+                ("web".into(), g("Production")),
+                ("db".into(), g("Production")),
+                ("pi".into(), g("Lab")),
+            ]
+        );
+    }
+
+    #[test]
+    fn heading_forms() {
+        assert_eq!(
+            group_heading("#---- DB servers ----").as_deref(),
+            Some("DB servers")
+        );
+        assert_eq!(
+            group_heading("  # --  Home lab --  ").as_deref(),
+            Some("Home lab")
+        );
+        assert_eq!(group_heading("#--a-b--").as_deref(), Some("a-b"));
+        assert_eq!(group_heading("#------------"), None);
+        assert_eq!(group_heading("#- One -"), None);
+        assert_eq!(group_heading("# plain comment"), None);
+        assert_eq!(group_heading("Host --x--"), None);
+    }
+
+    #[test]
+    fn an_included_file_starts_in_the_including_group_and_keeps_its_own() {
+        let dir = std::env::temp_dir().join(format!("omny-groups-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("lab.conf"),
+            "Host inherited\n#-- Inner --\nHost inner\n",
+        )
+        .unwrap();
+        let main = dir.join("config");
+        std::fs::write(&main, "#-- Outer --\nInclude lab.conf\nHost after\n").unwrap();
+        let hosts = load_from_file(&main).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let got: Vec<_> = hosts
+            .iter()
+            .map(|h| (h.name.as_str(), h.group.as_deref()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("inherited", Some("Outer")),
+                ("inner", Some("Inner")),
+                ("after", Some("Outer")),
+            ]
+        );
+    }
 
     #[test]
     fn test_empty_input() {

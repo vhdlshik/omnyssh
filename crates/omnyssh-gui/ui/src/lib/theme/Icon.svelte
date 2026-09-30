@@ -108,5 +108,22 @@
     <path d="M4 7h16" />
     <path d="m16 21 4-4-4-4" />
     <path d="M20 17H4" />
+  {:else if name === 'monitor'}
+    <rect x="3" y="4" width="18" height="12" rx="2" />
+    <line x1="8" y1="20" x2="16" y2="20" />
+    <line x1="12" y1="16" x2="12" y2="20" />
+  {:else if name === 'plug'}
+    <path d="M9 2v5" />
+    <path d="M15 2v5" />
+    <path d="M6 7h12v4a6 6 0 0 1-12 0z" />
+    <path d="M12 17v5" />
+  {:else if name === 'chevron'}
+    <polyline points="9 6 15 12 9 18" />
+  {:else if name === 'collapseAll'}
+    <polyline points="7 20 12 15 17 20" />
+    <polyline points="7 4 12 9 17 4" />
+  {:else if name === 'expandAll'}
+    <polyline points="7 15 12 20 17 15" />
+    <polyline points="7 9 12 4 17 9" />
   {/if}
 </svg>

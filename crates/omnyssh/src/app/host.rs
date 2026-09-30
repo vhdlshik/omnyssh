@@ -286,6 +286,7 @@ impl HostForm {
             proxy_jump: None,
             tags,
             notes,
+            group: None,
             source,
             original_ssh_host: None,
             monitoring,
@@ -577,6 +578,8 @@ impl App {
                         // Nor has IdentitiesOnly, and losing it brings back a login
                         // that offers every agent key.
                         host.identities_only = old_host.is_some_and(|h| h.identities_only);
+                        // Nor has the group, which an edit must not drop either.
+                        host.group = old_host.and_then(|h| h.group.clone());
 
                         // An import is adopted under the name it was imported by; a copy
                         // already adopted keeps the one it carries. Dropping it brings the

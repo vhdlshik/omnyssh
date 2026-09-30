@@ -172,6 +172,29 @@ async terminalPaste() : Promise<Result<null, CommandError>> {
 }
 },
 /**
+ * The shells and serial ports this machine has, for the local-terminal picker.
+ */
+async localTargets() : Promise<Result<LocalTargetsDto, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("local_targets") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Open a local shell or serial port at `cols` x `rows`, streaming its output into
+ * `on_output`. Returns the public id the terminal commands take.
+ */
+async localOpen(target: LocalTargetDto, cols: number, rows: number, onOutput: TAURI_CHANNEL<TerminalBytes>) : Promise<Result<number, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("local_open", { target, cols, rows, onOutput }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Open an SFTP session for `host_name` (tech-gui.md §4.2). Awaits the core connect,
  * registers the manager under a fresh public id, and spawns the per-session
  * forwarder; the `sftp-connected` ack then arrives stamped with that id (§3.4).
@@ -527,7 +550,12 @@ export type FilePreview = { sessionId: number; path: string; content: string }
  * (tech-gui.md §3.4). `hasKey` reports whether an identity file is configured;
  * the key path itself never crosses the boundary.
  */
-export type HostDto = { name: string; hostname: string; user: string; port: number; tags: string[]; notes?: string | null; source: HostSourceDto; hasKey: boolean; passwordAuthDisabled?: boolean | null; monitoring: MonitorModeDto; monitorPort?: number | null; localForwards: LocalForwardDto[]; tunnelAutostart: boolean; forwardAgent: boolean }
+export type HostDto = { name: string; hostname: string; user: string; port: number; tags: string[]; notes?: string | null; source: HostSourceDto; hasKey: boolean; passwordAuthDisabled?: boolean | null; monitoring: MonitorModeDto; monitorPort?: number | null; localForwards: LocalForwardDto[]; tunnelAutostart: boolean; forwardAgent: boolean; 
+/**
+ * The group the dashboard lists the host under (a `#--- Name ---` heading in
+ * `~/.ssh/config`); none for an ungrouped host.
+ */
+group?: string | null }
 /**
  * Inbound host form payload for `save_host` (tech-gui.md §4.1, Stage 4.1). Always
  * builds a **manual** `Host`: editing an SSH-config import saves a copy that shadows
@@ -588,6 +616,20 @@ export type KeySetupStepDto = { index: number; total: number; description: strin
  */
 export type LocalForwardDto = { bindAddress?: string | null; bindPort: number; remoteHost: string; remotePort: number }
 /**
+ * A shell this machine can start in a local terminal. `id` is what `local_open` takes
+ * back; `detail` is the program's path, shown under the name.
+ */
+export type LocalShellDto = { id: string; name: string; detail: string }
+/**
+ * What a local terminal connects to: one of the detected shells, by id, or a serial
+ * port at a speed (8N1, no flow control).
+ */
+export type LocalTargetDto = { kind: "shell"; id: string } | { kind: "serial"; port: string; baud: number }
+/**
+ * Everything the local-terminal picker offers.
+ */
+export type LocalTargetsDto = { shells: LocalShellDto[]; serialPorts: SerialPortDto[]; baudRates: number[] }
+/**
  * A metrics snapshot for a host (tech-gui.md §4.1). The core's `Instant` is
  * flattened to `ageSeconds` (seconds since the sample) so it can serialise.
  */
@@ -612,6 +654,11 @@ export type PasswordRequired = { requestId: number; hostName: string; login: str
  * A single process in the "top processes" panel (tech-gui.md §4.1).
  */
 export type ProcessDto = { name: string; cpuPercent: number; memPercent: number }
+/**
+ * A serial port: its device name (`/dev/ttyUSB0`, `COM3`) and what the system knows
+ * about the device behind it (empty when nothing).
+ */
+export type SerialPortDto = { name: string; detail: string }
 /**
  * A service detected on a host with its quick-scan metrics (tech-gui.md §4.1).
  */

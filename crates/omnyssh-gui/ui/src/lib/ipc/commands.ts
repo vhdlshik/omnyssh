@@ -7,6 +7,8 @@ import type {
   FileEntryDto,
   HostDto,
   HostInputDto,
+  LocalTargetDto,
+  LocalTargetsDto,
   SnippetDto,
   TerminalBytes,
   TraySupportDto,
@@ -76,6 +78,26 @@ export async function terminalOpen(
   onOutput: Channel<TerminalBytes>
 ): Promise<number> {
   const res = await commands.terminalOpen(hostName, cols, rows, onOutput);
+  if (res.status === 'error') throw new Error(res.error.message);
+  return res.data;
+}
+
+/** The shells and serial ports this machine has, for the local-terminal picker. */
+export async function localTargets(): Promise<LocalTargetsDto> {
+  const res = await commands.localTargets();
+  if (res.status === 'error') throw new Error(res.error.message);
+  return res.data;
+}
+
+/** Open a local shell or serial port; returns the id the terminal commands take, like
+ *  `terminalOpen`. Its end arrives as `terminal-exited`, as an SSH terminal's does. */
+export async function localOpen(
+  target: LocalTargetDto,
+  cols: number,
+  rows: number,
+  onOutput: Channel<TerminalBytes>
+): Promise<number> {
+  const res = await commands.localOpen(target, cols, rows, onOutput);
   if (res.status === 'error') throw new Error(res.error.message);
   return res.data;
 }

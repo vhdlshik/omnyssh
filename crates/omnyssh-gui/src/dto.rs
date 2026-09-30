@@ -73,6 +73,10 @@ pub struct HostDto {
     pub local_forwards: Vec<LocalForwardDto>,
     pub tunnel_autostart: bool,
     pub forward_agent: bool,
+    /// The group the dashboard lists the host under (a `#--- Name ---` heading in
+    /// `~/.ssh/config`); none for an ungrouped host.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 /// One `ssh -L` rule (tech-gui.md §4.1): listen on `bindAddress:bindPort` here and
@@ -140,6 +144,43 @@ pub struct HostInputDto {
 pub struct TraySupportDto {
     pub available: bool,
     pub minimize: bool,
+}
+
+/// A shell this machine can start in a local terminal. `id` is what `local_open` takes
+/// back; `detail` is the program's path, shown under the name.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalShellDto {
+    pub id: String,
+    pub name: String,
+    pub detail: String,
+}
+
+/// A serial port: its device name (`/dev/ttyUSB0`, `COM3`) and what the system knows
+/// about the device behind it (empty when nothing).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SerialPortDto {
+    pub name: String,
+    pub detail: String,
+}
+
+/// Everything the local-terminal picker offers.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalTargetsDto {
+    pub shells: Vec<LocalShellDto>,
+    pub serial_ports: Vec<SerialPortDto>,
+    pub baud_rates: Vec<u32>,
+}
+
+/// What a local terminal connects to: one of the detected shells, by id, or a serial
+/// port at a speed (8N1, no flow control).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LocalTargetDto {
+    Shell { id: String },
+    Serial { port: String, baud: u32 },
 }
 
 /// Live connection state for a host (tech-gui.md §4.1). Internally tagged so the
@@ -339,6 +380,7 @@ impl From<&Host> for HostDto {
             local_forwards: host.local_forwards.iter().map(Into::into).collect(),
             tunnel_autostart: host.tunnel_autostart,
             forward_agent: host.forward_agent,
+            group: host.group.clone(),
         }
     }
 }
@@ -418,6 +460,7 @@ impl From<HostInputDto> for Host {
             proxy_jump: non_empty(dto.proxy_jump),
             tags: dto.tags,
             notes: non_empty(dto.notes),
+            group: None,
             source: HostSource::Manual,
             original_ssh_host: None,
             monitoring,

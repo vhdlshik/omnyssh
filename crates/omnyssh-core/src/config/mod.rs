@@ -146,11 +146,20 @@ pub(crate) fn merge_hosts(manual: Vec<Host>, ssh_hosts: Vec<Host>) -> Vec<Host> 
         .filter_map(|h| h.original_ssh_host.clone())
         .collect();
 
+    // A host adopted from `~/.ssh/config` (or renamed from it) stays in the group the
+    // file puts it in, so moving it between headings there moves it here too.
+    let ssh_groups: std::collections::HashMap<&str, &str> = ssh_hosts
+        .iter()
+        .filter_map(|h| Some((h.name.as_str(), h.group.as_deref()?)))
+        .collect();
     let mut all = manual;
     for copy in &mut all {
         let source = copy.original_ssh_host.as_deref().unwrap_or(&copy.name);
         if let Some(import) = ssh_hosts.iter().find(|h| h.name == source) {
             copy.identities_only = import.identities_only;
+        }
+        if let Some(group) = ssh_groups.get(source) {
+            copy.group = Some((*group).to_string());
         }
     }
     for h in ssh_hosts {
@@ -188,6 +197,34 @@ mod tests {
     }
 
     // --- merge_hosts (P0.3) -----------------------------------------------
+
+    #[test]
+    fn an_adopted_host_follows_its_group_in_the_ssh_config() {
+        let imported = |name: &str, group: &str| Host {
+            group: Some(group.to_string()),
+            ..host(name, HostSource::SshConfig)
+        };
+        let own = Host {
+            group: Some("Mine".to_string()),
+            ..host("solo", HostSource::Manual)
+        };
+        let out = merge_hosts(
+            vec![host("web", HostSource::Manual), renamed("db2", "db"), own],
+            vec![imported("web", "Prod"), imported("db", "Data")],
+        );
+        let got: Vec<_> = out
+            .iter()
+            .map(|h| (h.name.as_str(), h.group.as_deref()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("web", Some("Prod")),
+                ("db2", Some("Data")),
+                ("solo", Some("Mine"))
+            ]
+        );
+    }
 
     #[test]
     fn merge_empty_both() {

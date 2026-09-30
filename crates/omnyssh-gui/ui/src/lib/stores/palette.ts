@@ -14,7 +14,7 @@ export type PaletteItem =
   | { kind: 'host'; host: HostDto };
 
 function hostHaystack(h: HostDto): string {
-  return `${h.name} ${h.hostname} ${h.user} ${h.tags.join(' ')}`.toLowerCase();
+  return `${h.name} ${h.hostname} ${h.user} ${h.group ?? ''} ${h.tags.join(' ')}`.toLowerCase();
 }
 
 function sessionHaystack(s: Session): string {

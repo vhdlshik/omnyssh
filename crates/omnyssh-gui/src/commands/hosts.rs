@@ -123,6 +123,8 @@ fn upsert(hosts: &mut Vec<Host>, input: HostInputDto, imported: Option<Host>) {
                 .or_else(|| existing.identity_file.clone());
             host.proxy_jump = host.proxy_jump.or_else(|| existing.proxy_jump.clone());
             host.identities_only = existing.identities_only;
+            // The form has no group field: an edit keeps the host where it was listed.
+            host.group = existing.group.clone();
             host.key_setup_date = existing.key_setup_date.clone();
             host.password_auth_disabled = existing.password_auth_disabled;
             host.original_ssh_host = existing.original_ssh_host.clone();
@@ -137,6 +139,7 @@ fn upsert(hosts: &mut Vec<Host>, input: HostInputDto, imported: Option<Host>) {
                 host.proxy_jump = host.proxy_jump.or(imported.proxy_jump);
                 host.identity_file = host.identity_file.or(imported.identity_file);
                 host.identities_only = imported.identities_only;
+                host.group = imported.group;
                 // Which `~/.ssh/config` entry this copy stands in for. Inert while the
                 // names match — `merge_hosts` already drops the import on the name — but
                 // it is what keeps the import hidden once the copy is renamed in the TUI,

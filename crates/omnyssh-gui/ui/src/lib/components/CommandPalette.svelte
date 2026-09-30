@@ -8,7 +8,7 @@
   import { palette, paletteItems, paletteSignature, nextIndex, hostStatusDot } from '$lib/stores/palette';
   import { hosts } from '$lib/stores/hosts';
   import { statuses } from '$lib/stores/statuses';
-  import { sessions, sessionLabel, sessionStatusDot } from '$lib/stores/sessions';
+  import { sessions, sessionIcon, sessionLabel, sessionStatusDot } from '$lib/stores/sessions';
   import { activeEntity } from '$lib/stores/activeEntity';
   import { spawnSession } from '$lib/stores/navigation';
   import { streamerMode, displayHostname } from '$lib/stores/streamer';
@@ -197,7 +197,7 @@
               >
                 {#if item.kind === 'session'}
                   <StatusDot status={sessionStatusDot[item.session.status]} />
-                  <Icon name={item.session.kind} size={16} />
+                  <Icon name={sessionIcon(item.session)} size={16} />
                   <span class="min-w-0 flex-1 truncate">{sessionLabel(item.session)}</span>
                 {:else}
                   <StatusDot status={hostStatusDot($statuses.get(item.host.name))} />

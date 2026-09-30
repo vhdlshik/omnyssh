@@ -224,7 +224,7 @@ export const serverCards = derived(
     )
 );
 
-// Case-insensitive substring filter over a card's name / hostname / tags / notes,
+// Case-insensitive substring filter over a card's name / hostname / group / tags / notes,
 // mirroring the TUI host search (crates/omnyssh/src/app/host.rs `filter_hosts`). An
 // empty query keeps every card.
 export function filterHosts(cards: ServerCard[], query: string): ServerCard[] {
@@ -234,6 +234,7 @@ export function filterHosts(cards: ServerCard[], query: string): ServerCard[] {
     ({ host }) =>
       host.name.toLowerCase().includes(q) ||
       host.hostname.toLowerCase().includes(q) ||
+      (host.group?.toLowerCase().includes(q) ?? false) ||
       host.tags.some((t) => t.toLowerCase().includes(q)) ||
       (host.notes?.toLowerCase().includes(q) ?? false)
   );

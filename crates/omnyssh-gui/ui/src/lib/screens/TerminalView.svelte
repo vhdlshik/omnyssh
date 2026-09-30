@@ -20,6 +20,7 @@
   import { dialogs } from '$lib/stores/dialogs';
   import {
     terminalOpen,
+    localOpen,
     terminalWrite,
     terminalResize,
     terminalClose,
@@ -37,7 +38,10 @@
   } from './terminalCwd';
   import { uploadToDir, type UploadStatus } from './terminalUpload';
   import { formatBytes } from '$lib/stores/sftp';
-  import { isMac } from '$lib/platform';
+  import { isMac, isWindows } from '$lib/platform';
+  import { rightClickCopyPaste, selectOverApps } from '$lib/stores/terminalMouse';
+  import { attachMouseGestures } from './terminalGestures';
+  import { quotePaths } from './localPicker';
   import type { TerminalBytes } from '$lib/bindings';
 
   let { session, active }: { session: Session; active: boolean } = $props();
@@ -88,6 +92,20 @@
   let themeUnsub: (() => void) | undefined;
   let resizeObserver: ResizeObserver | undefined;
   let stopDragDrop: (() => void) | undefined;
+  let stopGestures: (() => void) | undefined;
+
+  /** Right-click paste. WebKitGTK has no clipboard read for a page, so on Linux the
+   *  webview pastes natively into the focused terminal (the same command Ctrl+Shift+V
+   *  falls back to); WebView2 and WKWebView read the clipboard, and `term.paste` keeps
+   *  bracketed paste for programs that asked for it. */
+  async function pasteClipboard(): Promise<void> {
+    if (!isMac && !isWindows) {
+      await terminalPaste();
+      return;
+    }
+    const text = await navigator.clipboard.readText();
+    if (text) term?.paste(text);
+  }
 
   // The shell's directory as it last reported it (see terminalCwd): OSC 7 when the
   // shell emits it, else the `user@host: dir` window title. Unknown means the drop
@@ -125,6 +143,21 @@
   let notice = $state<string | null>(null);
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let uploadChain: Promise<void> = Promise.resolve();
+
+  // A drop on a local shell types the files' paths at the prompt, as desktop terminals
+  // do; a serial line takes no drop at all. Only an SSH terminal uploads.
+  const dropMode = $derived<'upload' | 'paths' | 'none'>(
+    session.local?.kind === 'serial' ? 'none' : session.local ? 'paths' : 'upload'
+  );
+
+  /** Quote dropped paths for this shell: Windows' own shells take double quotes; Git
+   *  Bash and WSL are Unix shells even on Windows. */
+  function typePaths(paths: string[]): void {
+    const id = session.local?.kind === 'shell' ? session.local.id : '';
+    const windowsShell = isWindows && id !== 'gitbash' && !id.startsWith('wsl');
+    sendInput(ENCODER.encode(quotePaths(paths, windowsShell)));
+    term?.focus();
+  }
 
   /** Whether a drag-drop position (physical px, webview-relative) is over this tab. */
   function overTerminal(position: { x: number; y: number }): boolean {
@@ -215,12 +248,23 @@
         fontFamily: MONO,
         fontSize: 13,
         cursorBlink: true,
-        scrollback: 5000
+        scrollback: 5000,
+        // Option+drag selects over a program that reads the mouse, as Shift does
+        // elsewhere; the select-over-apps gesture relies on it (see terminalGestures).
+        macOptionClickForcesSelection: true
       });
       fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
       term.open(container);
       term.onScroll(syncScrolled);
+      stopGestures = attachMouseGestures(container, term, {
+        isMac,
+        rightClickCopyPaste: () => get(rightClickCopyPaste),
+        selectOverApps: () => get(selectOverApps),
+        writeClipboard: (text) => navigator.clipboard.writeText(text),
+        pasteClipboard,
+        onError: (message) => lastError.set(message)
+      });
       // Track the shell's directory for drag-and-drop uploads. Neither handler
       // consumes the sequence, so xterm's own title handling still runs.
       term.parser.registerOscHandler(7, (data) => {
@@ -238,20 +282,24 @@
         const dir = parseTitleCwd(title);
         if (dir) titleDir = dir;
       });
-      void getCurrentWebview()
-        .onDragDropEvent((event) => {
+      // Drops are an extra: a webview that cannot report them (no Tauri runtime) must
+      // not stop the terminal itself from opening.
+      void Promise.resolve()
+        .then(() => getCurrentWebview())
+        .then((webview) => webview.onDragDropEvent((event) => {
           const p = event.payload;
           if (p.type === 'leave') {
             dragOver = false;
           } else if (p.type === 'drop') {
             dragOver = false;
             if (p.paths.length > 0 && termId != null && overTerminal(p.position)) {
-              uploadDropped(p.paths);
+              if (dropMode === 'upload') uploadDropped(p.paths);
+              else if (dropMode === 'paths') typePaths(p.paths);
             }
           } else {
-            dragOver = termId != null && overTerminal(p.position);
+            dragOver = dropMode !== 'none' && termId != null && overTerminal(p.position);
           }
-        })
+        }))
         .then((unlisten) => {
           if (destroyed) unlisten();
           else stopDragDrop = unlisten;
@@ -279,13 +327,22 @@
 
       // Fit before opening so the remote PTY starts at the visible size.
       safeFit();
-      const id = await terminalOpen(session.hostName, term.cols || 80, term.rows || 24, channel);
+      const cols = term.cols || 80;
+      const rows = term.rows || 24;
+      const id = session.local
+        ? await localOpen(session.local, cols, rows, channel)
+        : await terminalOpen(session.hostName, cols, rows, channel);
       if (destroyed) {
         void terminalClose(id).catch(() => {});
         return;
       }
       termId = id;
       sessions.setTermId(session.id, id);
+      // A local session is up once open: a serial device may say nothing until spoken to.
+      if (session.local && !connected) {
+        connected = true;
+        sessions.setStatus(session.id, 'connected');
+      }
       // The remote may have already exited before this id was recorded (fast-fail
       // connect race): terminal-exited couldn't match the tab, so close it now.
       if (terminalDidExit(id)) {
@@ -344,6 +401,7 @@
     themeUnsub?.();
     resizeObserver?.disconnect();
     stopDragDrop?.();
+    stopGestures?.();
     if (noticeTimer !== undefined) clearTimeout(noticeTimer);
     // Idempotent: a remote-exit teardown already dropped this id backend-side (§3.4).
     if (termId != null) void terminalClose(termId).catch(() => {});
@@ -385,11 +443,12 @@
       style="top: max(var(--titlebar-h), 0.75rem);"
     >
       <p class="rounded-md bg-surface-raised px-3 py-1.5 text-sm text-muted shadow">
-        Drop to upload to
-        {#if shellDir}
-          <span class="font-mono text-fg">{shellDir}</span>
+        {#if dropMode === 'paths'}
+          Drop to type the path at the prompt
+        {:else if shellDir}
+          Drop to upload to <span class="font-mono text-fg">{shellDir}</span>
         {:else}
-          the shell's current folder
+          Drop to upload to the shell's current folder
         {/if}
       </p>
     </div>

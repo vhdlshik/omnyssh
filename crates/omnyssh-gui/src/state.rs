@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use omnyssh_core::event::{CoreEvent, SessionId, TransferId};
@@ -18,6 +18,7 @@ use tauri::ipc::Channel;
 use tokio::sync::mpsc;
 
 use crate::dto::{HostDto, TerminalBytes, TunnelStatusDto};
+use crate::local::LocalSession;
 
 /// Metric poll cadence. Mirrors the TUI's fixed interval; a configurable refresh
 /// interval lands with settings in Stage 4.3 (tech-gui.md §4.3).
@@ -103,6 +104,9 @@ pub struct GuiState {
     /// The last status of every tunnel that has not stopped, replayed to a
     /// frontend that reloads while its tunnels keep running.
     tunnel_statuses: Mutex<HashMap<String, TunnelStatusDto>>,
+    /// Local shells and serial consoles, keyed by their public id. They share the
+    /// terminal commands with SSH terminals and are looked up first.
+    local: Mutex<HashMap<SessionId, Arc<LocalSession>>>,
     /// Shared engine channel the bridge drains; cloned to `PollManager`/`PtyManager`.
     engine_tx: mpsc::Sender<CoreEvent>,
 }
@@ -123,6 +127,7 @@ impl GuiState {
             tunnels: Mutex::new(TunnelManager::new(engine_tx.clone())),
             tunnels_autostarted: AtomicBool::new(false),
             tunnel_statuses: Mutex::new(HashMap::new()),
+            local: Mutex::new(HashMap::new()),
             engine_tx,
         }
     }
@@ -365,8 +370,48 @@ impl GuiState {
         }
     }
 
+    /// Start a local session under a fresh public id. `start` gets that id (for its
+    /// exit report) and opens the shell or port; the map stays locked until the session
+    /// is in it, so an exit racing the open still finds it in `local_exited`.
+    pub fn open_local(
+        &self,
+        start: impl FnOnce(SessionId) -> Result<LocalSession, String>,
+    ) -> Result<SessionId, String> {
+        let public = self
+            .sessions
+            .lock()
+            .expect("sessions lock poisoned")
+            .allocate();
+        let mut local = self.local.lock().expect("local lock poisoned");
+        let session = start(public)?;
+        local.insert(public, Arc::new(session));
+        Ok(public)
+    }
+
+    /// A local session ended on its own. Returns whether it was still open, i.e.
+    /// whether the tab has to hear about it; a closed tab already dropped it.
+    pub fn local_exited(&self, public: SessionId) -> bool {
+        self.local
+            .lock()
+            .expect("local lock poisoned")
+            .remove(&public)
+            .is_some()
+    }
+
+    fn local_session(&self, public: SessionId) -> Option<Arc<LocalSession>> {
+        self.local
+            .lock()
+            .expect("local lock poisoned")
+            .get(&public)
+            .cloned()
+    }
+
     /// Forward keystrokes to a terminal. Unknown/closed ids are a no-op.
     pub fn write_terminal(&self, public: SessionId, data: &[u8]) {
+        if let Some(local) = self.local_session(public) {
+            local.write(data);
+            return;
+        }
         self.on_pty_inner(public, |pty, inner| {
             let _ = pty.write(inner, data);
         });
@@ -374,6 +419,10 @@ impl GuiState {
 
     /// Relay a resize (window_change) to a terminal. Unknown/closed ids are a no-op.
     pub fn resize_terminal(&self, public: SessionId, cols: u16, rows: u16) {
+        if let Some(local) = self.local_session(public) {
+            local.resize(cols, rows);
+            return;
+        }
         self.on_pty_inner(public, |pty, inner| {
             let _ = pty.resize(inner, cols, rows);
         });
@@ -383,6 +432,15 @@ impl GuiState {
     /// so the task's later `PtyExited` finds no mapping and emits no `terminal-exited`
     /// (the frontend already tore the tab down, §3.4).
     pub fn close_terminal(&self, public: SessionId) {
+        let local = self
+            .local
+            .lock()
+            .expect("local lock poisoned")
+            .remove(&public);
+        if let Some(local) = local {
+            local.close();
+            return;
+        }
         let inner = self
             .sessions
             .lock()
