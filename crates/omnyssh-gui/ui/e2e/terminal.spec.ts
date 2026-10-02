@@ -43,6 +43,8 @@ async function boot(page: Page): Promise<void> {
       ) => fireEvent('terminal-exited', { sessionId });
 
       (win as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
+        // The window/webview labels `getCurrentWebview()` reads (the drop-to-upload hook).
+        metadata: { currentWindow: { label: 'main' }, currentWebview: { windowLabel: 'main', label: 'main' } },
         invoke: (cmd: string, args: Record<string, unknown>) => {
           switch (cmd) {
             case 'list_hosts':
@@ -62,10 +64,40 @@ async function boot(page: Page): Promise<void> {
               // Every byte the shell would get, for tests that assert what a key sent.
               ((win.__writes ??= []) as number[][]).push(data);
               const chId = sessionChannel[sessionId];
+              // The pwd probe (see terminalCwd) is answered on its private OSC.
+              const typed = String.fromCharCode(...data);
+              if (chId != null && typed.includes('6669')) {
+                setTimeout(() => sendToChannel(chId, '\x1b]6669;/srv/www\x07'), 0);
+                return Promise.resolve(null);
+              }
               // Echo a canned result once Enter (\r == 13) arrives, so output is assertable.
               if (chId != null && data.includes(13)) {
                 setTimeout(() => sendToChannel(chId, '\r\nRESULT-OK\r\n'), 0);
               }
+              return Promise.resolve(null);
+            }
+            // The Upload/Download commands: native pickers answer with fixed paths, and
+            // the short-lived SFTP session acks each transfer on the next tick.
+            case 'plugin:dialog|open':
+              return Promise.resolve(['/home/user/report.pdf']);
+            case 'plugin:dialog|save':
+              win.__saveDefault = (args.options as { defaultPath?: string }).defaultPath;
+              return Promise.resolve('/home/user/Downloads/app.log');
+            case 'plugin:path|resolve_directory':
+              return Promise.resolve('/home/user/Downloads');
+            case 'plugin:path|join':
+              return Promise.resolve((args.paths as string[]).join('/'));
+            case 'sftp_open':
+              return Promise.resolve(++nextSession);
+            case 'sftp_upload':
+            case 'sftp_download': {
+              const { sessionId, local, remote } = args as {
+                sessionId: number;
+                local: string;
+                remote: string;
+              };
+              ((win.__transfers ??= []) as string[]).push(`${cmd} ${local} ${remote}`);
+              setTimeout(() => fireEvent('sftp-op-done', { sessionId, ok: true }), 0);
               return Promise.resolve(null);
             }
             case 'terminal_paste':
@@ -275,4 +307,34 @@ test.describe('on macOS', () => {
     await page.keyboard.press('Control+Shift+C');
     expect(await copied(page)).toEqual([]);
   });
+});
+
+test('the Upload and Download commands move files to and from the shell’s folder', async ({
+  page
+}) => {
+  await boot(page);
+  await page.getByTitle('sh on web-1').click();
+  const toolbar = page.getByRole('toolbar', { name: 'file transfer' });
+  await expect(toolbar).toBeAttached();
+  const transfers = () =>
+    page.evaluate(() => (window as unknown as { __transfers?: string[] }).__transfers ?? []);
+
+  // Upload: the picked file lands in the directory the shell reports.
+  await toolbar.getByRole('button', { name: 'Upload' }).click({ force: true });
+  await expect.poll(transfers).toEqual(['sftp_upload /home/user/report.pdf /srv/www/report.pdf']);
+  await expect(page.getByRole('status', { name: 'upload progress' })).toContainText(
+    'Uploaded 1 file to /srv/www'
+  );
+
+  // Download: a name relative to the shell's folder, saved where the picker says.
+  await page.keyboard.press('Control+Shift+D');
+  const dialog = page.getByRole('dialog', { name: 'Download' });
+  await dialog.getByLabel('Remote file').fill('logs/app.log');
+  await page.keyboard.press('Enter');
+  await expect
+    .poll(transfers)
+    .toContain('sftp_download /home/user/Downloads/app.log /srv/www/logs/app.log');
+  expect(await page.evaluate(() => (window as unknown as { __saveDefault: string }).__saveDefault)).toBe(
+    '/home/user/Downloads/app.log'
+  );
 });

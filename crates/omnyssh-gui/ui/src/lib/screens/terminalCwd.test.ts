@@ -7,6 +7,7 @@ import {
   parsePwdAnswer,
   parseTitleCwd,
   pwdProbeCommand,
+  resolveRemote,
   toSftpDir
 } from './terminalCwd';
 
@@ -78,5 +79,23 @@ describe('pwd probe', () => {
     expect(parsePwdAnswer('/srv\n')).toBe('/srv');
     expect(parsePwdAnswer('$PWD')).toBeUndefined();
     expect(parsePwdAnswer('')).toBeUndefined();
+  });
+});
+
+describe('resolveRemote — what the Download command fetches', () => {
+  it('puts a bare name inside the shell directory', () => {
+    expect(resolveRemote('/srv/www', 'index.html')).toBe('/srv/www/index.html');
+    expect(resolveRemote('/srv/www', './logs/a.log')).toBe('/srv/www/logs/a.log');
+    expect(resolveRemote('.', 'notes.txt')).toBe('notes.txt');
+  });
+
+  it('keeps absolute and home-relative paths as they are', () => {
+    expect(resolveRemote('/srv', '/etc/hosts')).toBe('/etc/hosts');
+    expect(resolveRemote('/srv', '~/x.txt')).toBe('x.txt');
+    expect(resolveRemote('/srv', '~')).toBe('.');
+  });
+
+  it('answers nothing for an empty input', () => {
+    expect(resolveRemote('/srv', '   ')).toBeUndefined();
   });
 });

@@ -230,6 +230,14 @@ pub fn render_help(frame: &mut Frame, theme: &Theme) {
         Span::styled("  .", key_style),
         Span::styled("        Toggle hidden", desc_style),
     ]));
+    col2_lines.push(Line::from(vec![
+        Span::styled("  F5", key_style),
+        Span::styled("       Copy to other panel", desc_style),
+    ]));
+    col2_lines.push(Line::from(vec![
+        Span::styled("  F6 F7 F8", key_style),
+        Span::styled(" Rename/MkDir/Del", desc_style),
+    ]));
     col2_lines.push(Line::from(""));
 
     col2_lines.push(Line::from(Span::styled(" SNIPPETS", section_style)));

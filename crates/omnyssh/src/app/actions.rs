@@ -571,6 +571,30 @@ impl App {
                 self.fm_paste().await;
             }
 
+            AppAction::FmCopyToOther => {
+                let paths = self.active_fm_panel_ref().marked_or_cursor_paths();
+                if paths.is_empty() {
+                    self.view.status_message = Some("Nothing to copy.".to_string());
+                } else if self.sftp_manager.is_none() {
+                    self.view.status_message = Some("Connect a host first (Shift+H).".to_string());
+                } else {
+                    // Paste into the other panel through the ordinary paste path,
+                    // leaving the user's own clipboard and focus as they were.
+                    let source = self.view.file_manager.active_panel.clone();
+                    let saved = self.view.file_manager.clipboard.replace(FmClipboard {
+                        paths,
+                        source_panel: source.clone(),
+                    });
+                    self.view.file_manager.active_panel = match source {
+                        FmPanel::Local => FmPanel::Remote,
+                        FmPanel::Remote => FmPanel::Local,
+                    };
+                    self.fm_paste().await;
+                    self.view.file_manager.active_panel = source;
+                    self.view.file_manager.clipboard = saved;
+                }
+            }
+
             AppAction::FmOpenDeleteConfirm => {
                 let paths = self.active_fm_panel_ref().marked_or_cursor_paths();
                 if paths.is_empty() {

@@ -17,6 +17,8 @@ export interface Pane {
   loading: boolean;
   /** Marked entry paths — the batch transfer/delete targets. */
   marked: Set<string>;
+  /** Index into `entries` of the keyboard cursor (Total Commander style). */
+  cursor: number;
   error?: string;
 }
 
@@ -38,7 +40,7 @@ interface Preview {
 // so op-done events arrive in issue order — this FIFO correlates each op-done to the op
 // that produced it (the contract carries no op id, §4.3). `refresh` is the pane whose
 // listing the op invalidates.
-interface PendingOp {
+export interface PendingOp {
   kind: OpKind;
   name?: string;
   refresh: PaneSide;
@@ -47,6 +49,8 @@ interface PendingOp {
 export interface SftpSession {
   hostName: string;
   status: SftpStatus;
+  /** The pane the keyboard drives; the other one is the copy/move destination. */
+  active: PaneSide;
   local: Pane;
   remote: Pane;
   pending: PendingOp[];
@@ -54,13 +58,16 @@ export interface SftpSession {
   preview?: Preview;
   /** The last operation error, surfaced in the UI until the next successful action. */
   error?: string;
+  /** Whether the most recently finished op succeeded — a move deletes its source only
+   *  when the copy before it did. */
+  lastOk?: boolean;
   /** Pane(s) to re-list once `pending` drains (a mutation changed the FS); the
    *  component performs the listing and clears this. */
   refresh?: PaneSide | 'both';
 }
 
 function emptyPane(): Pane {
-  return { path: '', entries: [], loading: true, marked: new Set() };
+  return { path: '', entries: [], loading: true, marked: new Set(), cursor: 0 };
 }
 
 /** A fresh session in the connecting state, both panes empty. */
@@ -68,15 +75,70 @@ export function newSession(hostName: string): SftpSession {
   return {
     hostName,
     status: 'connecting',
+    active: 'local',
     local: emptyPane(),
     remote: emptyPane(),
     pending: []
   };
 }
 
+/** Where the cursor lands in a fresh listing: on the same entry when the directory
+ *  was only re-read, on the directory just left when going up (as Total Commander,
+ *  ranger and the TUI do), otherwise on the first row. */
+function landingCursor(pane: Pane, path: string, entries: FileEntryDto[]): number {
+  if (path === pane.path) {
+    const current = pane.entries[pane.cursor]?.path;
+    const same = current === undefined ? -1 : entries.findIndex((e) => e.path === current);
+    return same >= 0 ? same : clampCursor(pane.cursor, entries.length);
+  }
+  const left = entries.findIndex((e) => e.name !== '..' && e.path === pane.path);
+  return left >= 0 ? left : 0;
+}
+
+function clampCursor(cursor: number, length: number): number {
+  return Math.max(0, Math.min(cursor, length - 1));
+}
+
 /** A directory listing landed for a pane: replace entries at `path`, clear marks. */
 export function applyListing(pane: Pane, path: string, entries: FileEntryDto[]): Pane {
-  return { ...pane, path, entries, loading: false, marked: new Set(), error: undefined };
+  const cursor = landingCursor(pane, path, entries);
+  return { ...pane, path, entries, cursor, loading: false, marked: new Set(), error: undefined };
+}
+
+/** A cursor move: a row delta, or a jump to the first / last row. */
+export type CursorMove = number | 'first' | 'last';
+
+/** Move the keyboard cursor, staying inside the listing. */
+export function moveCursor(pane: Pane, move: CursorMove): Pane {
+  const target =
+    move === 'first' ? 0 : move === 'last' ? pane.entries.length - 1 : pane.cursor + move;
+  return { ...pane, cursor: clampCursor(target, pane.entries.length) };
+}
+
+/** The entry under the keyboard cursor, if any. */
+export function cursorEntry(pane: Pane): FileEntryDto | undefined {
+  return pane.entries[pane.cursor];
+}
+
+/** What an F-key command acts on: the marked entries, or else the one under the
+ *  cursor — never the `..` row. */
+export function targetEntries(pane: Pane): FileEntryDto[] {
+  const marked = markedEntries(pane);
+  if (marked.length > 0) return marked;
+  const entry = cursorEntry(pane);
+  return entry && entry.name !== '..' ? [entry] : [];
+}
+
+/** Mark every entry but `..`, or clear the marks when everything already is. */
+export function toggleMarkAll(pane: Pane): Pane {
+  const all = pane.entries.filter((e) => e.name !== '..').map((e) => e.path);
+  const everything = all.length > 0 && all.every((p) => pane.marked.has(p));
+  return { ...pane, marked: everything ? new Set() : new Set(all) };
+}
+
+/** The other pane — the destination of a copy or move. */
+export function otherSide(side: PaneSide): PaneSide {
+  return side === 'local' ? 'remote' : 'local';
 }
 
 /** Toggle an entry's marked state (the batch transfer/delete set). */
@@ -140,6 +202,7 @@ export function applyOpDone(session: SftpSession, ok: boolean, error?: string): 
     // silently masks e.g. a non-empty-folder delete beside a deleted sibling. The error
     // persists until the next batch clears it (`clearError`, called on enqueue).
     error: ok ? session.error : (error ?? 'Operation failed'),
+    lastOk: ok,
     transfer: wasTransfer ? undefined : session.transfer
   };
 }
@@ -179,6 +242,23 @@ function createSftp() {
     },
     toggleMark(id: number, side: PaneSide, path: string): void {
       mut(id, (s) => ({ ...s, [side]: toggleMark(s[side], path) }));
+    },
+    toggleMarkAll(id: number, side: PaneSide): void {
+      mut(id, (s) => ({ ...s, [side]: toggleMarkAll(s[side]) }));
+    },
+    setActive(id: number, side: PaneSide): void {
+      mut(id, (s) => (s.active === side ? s : { ...s, active: side }));
+    },
+    moveCursor(id: number, side: PaneSide, move: CursorMove): void {
+      mut(id, (s) => ({ ...s, [side]: moveCursor(s[side], move) }));
+    },
+    /** Put the cursor on row `index` (a click), making its pane the active one. */
+    setCursor(id: number, side: PaneSide, index: number): void {
+      mut(id, (s) => ({
+        ...s,
+        active: side,
+        [side]: { ...s[side], cursor: clampCursor(index, s[side].entries.length) }
+      }));
     },
     pushOp(id: number, op: PendingOp): void {
       mut(id, (s) => ({ ...s, pending: [...s.pending, op] }));

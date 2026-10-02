@@ -11,6 +11,11 @@ import {
   applyProgress,
   applyOpDone,
   formatBytes,
+  moveCursor,
+  cursorEntry,
+  targetEntries,
+  toggleMarkAll,
+  otherSide,
   type Pane,
   type SftpSession
 } from './sftp';
@@ -23,7 +28,7 @@ function entry(name: string, isDir = false, size = 0): FileEntryDto {
 }
 
 function paneWith(entries: FileEntryDto[], marked: string[] = []): Pane {
-  return { path: '/srv', entries, loading: false, marked: new Set(marked) };
+  return { path: '/srv', entries, loading: false, marked: new Set(marked), cursor: 0 };
 }
 
 describe('sftp reducers', () => {
@@ -197,5 +202,96 @@ describe('sftp store', () => {
     // A remote failure must not drop a legitimately in-flight local listing's spinner.
     expect(s?.local.loading).toBe(true);
     sftp.remove(1);
+  });
+});
+
+describe('the keyboard cursor', () => {
+  const listing = [entry('..', true), entry('app', true), entry('a.txt'), entry('b.txt')];
+
+  it('moves within the listing and clamps at both ends', () => {
+    let pane = paneWith(listing);
+    pane = moveCursor(pane, 2);
+    expect(cursorEntry(pane)?.name).toBe('a.txt');
+    pane = moveCursor(pane, 10);
+    expect(pane.cursor).toBe(3);
+    pane = moveCursor(pane, -10);
+    expect(pane.cursor).toBe(0);
+    expect(moveCursor(pane, 'last').cursor).toBe(3);
+    expect(moveCursor(moveCursor(pane, 'last'), 'first').cursor).toBe(0);
+    expect(moveCursor(paneWith([]), 1).cursor).toBe(0);
+  });
+
+  it('lands on the directory just left when going up', () => {
+    const inside: Pane = { ...paneWith([entry('..', true)]), path: '/srv/app' };
+    const up = applyListing(inside, '/srv', listing);
+    expect(cursorEntry(up)?.name).toBe('app');
+  });
+
+  it('stays on the same entry when the directory is re-read', () => {
+    const pane = { ...paneWith(listing), cursor: 3 };
+    // a.txt was deleted: b.txt moved up a row, the cursor follows it.
+    const next = applyListing(pane, '/srv', [entry('..', true), entry('app', true), entry('b.txt')]);
+    expect(cursorEntry(next)?.name).toBe('b.txt');
+    // The entry itself is gone: the cursor stays in range.
+    const gone = applyListing(next, '/srv', [entry('..', true)]);
+    expect(gone.cursor).toBe(0);
+  });
+
+  it('starts at the top of a directory entered', () => {
+    const pane = { ...paneWith(listing), cursor: 2 };
+    expect(applyListing(pane, '/srv/app', [entry('x')]).cursor).toBe(0);
+  });
+});
+
+describe('what an F-key command acts on', () => {
+  const listing = [entry('..', true), entry('app', true), entry('a.txt'), entry('b.txt')];
+
+  it('takes the marked entries when there are any', () => {
+    const pane = { ...paneWith(listing, ['/srv/b.txt', '/srv/app']), cursor: 2 };
+    expect(targetEntries(pane).map((e) => e.name)).toEqual(['app', 'b.txt']);
+  });
+
+  it('falls back to the entry under the cursor, never ..', () => {
+    expect(targetEntries({ ...paneWith(listing), cursor: 2 }).map((e) => e.name)).toEqual([
+      'a.txt'
+    ]);
+    expect(targetEntries({ ...paneWith(listing), cursor: 0 })).toEqual([]);
+  });
+
+  it('marks everything but .., then clears on a second go', () => {
+    const all = toggleMarkAll(paneWith(listing));
+    expect(markedEntries(all).map((e) => e.name)).toEqual(['app', 'a.txt', 'b.txt']);
+    expect(toggleMarkAll(all).marked.size).toBe(0);
+  });
+
+  it('names the other pane as the destination', () => {
+    expect(otherSide('local')).toBe('remote');
+    expect(otherSide('remote')).toBe('local');
+  });
+
+  it('records whether the last op succeeded, for a move to delete its source', () => {
+    let s: SftpSession = {
+      ...newSession('web-1'),
+      pending: [
+        { kind: 'download', name: 'a', refresh: 'local' },
+        { kind: 'delete', name: 'a', refresh: 'remote' }
+      ]
+    };
+    s = applyOpDone(s, false, 'disk full');
+    expect(s.lastOk).toBe(false);
+    s = applyOpDone(s, true);
+    expect(s.lastOk).toBe(true);
+  });
+
+  it('tracks the active pane and puts the cursor where a row was clicked', () => {
+    sftp.open(42, 'web-1');
+    sftp.listing(42, 'remote', '/srv', listing);
+    sftp.setCursor(42, 'remote', 2);
+    const s = get(sftp).get(42)!;
+    expect(s.active).toBe('remote');
+    expect(cursorEntry(s.remote)?.name).toBe('a.txt');
+    sftp.setActive(42, 'local');
+    expect(get(sftp).get(42)!.active).toBe('local');
+    sftp.remove(42);
   });
 });

@@ -18,8 +18,9 @@ use commands::auth::{answer_password, unlock_identity};
 use commands::hosts::{delete_host, list_hosts, refresh_metrics, reload_hosts, save_host};
 use commands::keysetup::start_key_setup;
 use commands::sftp::{
-    list_local_dir, preview_local_file, sftp_close, sftp_delete, sftp_download, sftp_list,
-    sftp_mkdir, sftp_open, sftp_preview, sftp_rename, sftp_upload,
+    list_local_dir, local_delete, local_mkdir, local_rename, preview_local_file, sftp_close,
+    sftp_delete, sftp_download, sftp_list, sftp_mkdir, sftp_open, sftp_preview, sftp_remove_tree,
+    sftp_rename, sftp_upload,
 };
 use commands::snippets::{delete_snippet, execute_snippet, list_snippets, save_snippet};
 use commands::terminal::{
@@ -111,10 +112,14 @@ fn specta_builder() -> Builder<tauri::Wry> {
             sftp_mkdir,
             sftp_rename,
             sftp_delete,
+            sftp_remove_tree,
             sftp_preview,
             sftp_close,
             list_local_dir,
             preview_local_file,
+            local_mkdir,
+            local_rename,
+            local_delete,
             start_key_setup,
             tunnel_start,
             tunnel_stop,
@@ -252,6 +257,8 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // Opens the support dialog's GitHub/Telegram links in the default browser.
         .plugin(tauri_plugin_opener::init())
+        // Native open/save pickers for the terminal's Upload… and Download… commands.
+        .plugin(tauri_plugin_dialog::init())
         // Restores the window's size and position between launches; the flags keep it
         // away from everything that would touch the window itself (WINDOW_STATE_FLAGS).
         .plugin(
