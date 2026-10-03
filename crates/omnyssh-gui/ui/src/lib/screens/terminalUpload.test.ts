@@ -5,6 +5,7 @@ import { sftp } from '$lib/stores/sftp';
 // Stand in for the backend: each upload "completes" on the next tick through the same
 // store calls the event router makes for `transfer-progress` / `sftp-op-done`.
 const uploads: Array<{ local: string; remote: string }> = [];
+const downloads: Array<{ local: string; remote: string }> = [];
 let failName: string | undefined;
 const closed: number[] = [];
 
@@ -20,14 +21,23 @@ vi.mock('$lib/ipc/commands', () => ({
       if (failName && local.endsWith(failName)) sftp.opDone(id, false, 'Permission denied');
       else sftp.opDone(id, true);
     }, 0);
+  }),
+  sftpDownload: vi.fn(async (id: number, local: string, remote: string) => {
+    downloads.push({ local, remote });
+    setTimeout(() => {
+      sftp.progress(id, { sessionId: id, transferId: 2, done: 3, total: 9 } as never);
+      if (failName && remote.endsWith(failName)) sftp.opDone(id, false, 'No such file');
+      else sftp.opDone(id, true);
+    }, 0);
   })
 }));
 
-const { uploadToDir } = await import('./terminalUpload');
+const { uploadToDir, downloadTo } = await import('./terminalUpload');
 
 describe('uploading files dropped on a terminal', () => {
   beforeEach(() => {
     uploads.length = 0;
+    downloads.length = 0;
     closed.length = 0;
     failName = undefined;
   });
@@ -59,5 +69,30 @@ describe('uploading files dropped on a terminal', () => {
     const result = await uploadToDir('box', '/', ['/'], () => {});
     expect(result).toEqual({ uploaded: 0, failures: [] });
     expect(closed).toEqual([]);
+  });
+});
+
+describe('downloading from a terminal', () => {
+  beforeEach(() => {
+    downloads.length = 0;
+    closed.length = 0;
+    failName = undefined;
+  });
+
+  it('fetches the remote path to the chosen local path, then closes the session', async () => {
+    const statuses: string[] = [];
+    const result = await downloadTo('box', '/srv/www/site', '/home/me/Downloads/site', (s) =>
+      statuses.push(`${s.kind} ${s.name} ${s.done}/${s.total}`)
+    );
+    expect(downloads).toEqual([{ local: '/home/me/Downloads/site', remote: '/srv/www/site' }]);
+    expect(result).toEqual({ uploaded: 1, failures: [] });
+    expect(statuses).toContain('download site 3/9');
+    expect(closed).toEqual([7]);
+  });
+
+  it('reports a failure by name', async () => {
+    failName = 'gone.txt';
+    const result = await downloadTo('box', 'gone.txt', '/tmp/gone.txt', () => {});
+    expect(result).toEqual({ uploaded: 0, failures: ['gone.txt: No such file'] });
   });
 });

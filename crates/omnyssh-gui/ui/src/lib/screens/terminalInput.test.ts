@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   chunkBytes,
+  fileShortcut,
   INPUT_CHUNK,
   isCopyShortcut,
   layoutFallback,
@@ -144,5 +145,30 @@ describe('chunkBytes — bounded terminal input', () => {
 
   it('defaults to the INPUT_CHUNK cap', () => {
     expect(chunkBytes(seq(INPUT_CHUNK + 1)).map((c) => c.length)).toEqual([INPUT_CHUNK, 1]);
+  });
+});
+
+describe('fileShortcut — the terminal’s Upload and Download commands', () => {
+  it('uploads on Ctrl+Shift+U and downloads on Ctrl+Shift+D', () => {
+    expect(fileShortcut(press({ key: 'U', code: 'KeyU' }), false)).toBe('upload');
+    expect(fileShortcut(press({ key: 'd', code: 'KeyD' }), false)).toBe('download');
+  });
+
+  it('uses Cmd+Shift on macOS, and leaves Ctrl+Shift to the shell there', () => {
+    const cmd = { ctrlKey: false, metaKey: true };
+    expect(fileShortcut(press({ ...cmd, key: 'u', code: 'KeyU' }), true)).toBe('upload');
+    expect(fileShortcut(press({ key: 'u', code: 'KeyU' }), true)).toBeNull();
+  });
+
+  it('follows the physical key under a non-Latin layout', () => {
+    expect(fileShortcut(press({ key: 'Г', code: 'KeyU' }), false)).toBe('upload');
+    expect(fileShortcut(press({ key: 'В', code: 'KeyD' }), false)).toBe('download');
+  });
+
+  it('leaves plain Ctrl, Alt chords, other letters and keyups alone', () => {
+    expect(fileShortcut(press({ key: 'u', code: 'KeyU', shiftKey: false }), false)).toBeNull();
+    expect(fileShortcut(press({ key: 'U', code: 'KeyU', altKey: true }), false)).toBeNull();
+    expect(fileShortcut(press({ key: 'C', code: 'KeyC' }), false)).toBeNull();
+    expect(fileShortcut(press({ key: 'U', code: 'KeyU', type: 'keyup' }), false)).toBeNull();
   });
 });

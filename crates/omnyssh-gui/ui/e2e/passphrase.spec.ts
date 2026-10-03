@@ -36,6 +36,8 @@ async function boot(
       win.__fire = fire;
 
       (win as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
+        // The window/webview labels `getCurrentWebview()` reads (the drop-to-upload hook).
+        metadata: { currentWindow: { label: 'main' }, currentWebview: { windowLabel: 'main', label: 'main' } },
         invoke: (cmd: string, args: Record<string, unknown>) => {
           switch (cmd) {
             case 'list_hosts':

@@ -41,6 +41,8 @@ tauri-plugin-updater = "2"
 # Opens external URLs (the GitHub repo + Telegram channel from the support dialog) in
 # the user's default browser; the webview itself must never navigate away from the app.
 tauri-plugin-opener = "2"
+# Native open/save file pickers for the terminal's Upload… and Download… commands.
+tauri-plugin-dialog = "2"
 # Restores the window's size and position between launches. Registered Rust-side only,
 # so none of its commands are granted to the frontend.
 tauri-plugin-window-state = "2"

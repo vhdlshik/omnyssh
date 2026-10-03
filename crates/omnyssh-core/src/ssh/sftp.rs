@@ -46,13 +46,13 @@ pub struct FileEntry {
 pub enum SftpCommand {
     /// List the entries in a remote directory.
     ListDir(String),
-    /// Download a remote file to a local path.
+    /// Download a remote file — or a whole directory tree — to a local path.
     Download {
         remote: String,
         local: String,
         transfer_id: TransferId,
     },
-    /// Upload a local file to a remote path.
+    /// Upload a local file — or a whole directory tree — to a remote path.
     Upload {
         local: String,
         remote: String,
@@ -60,6 +60,9 @@ pub enum SftpCommand {
     },
     /// Delete a remote file (falls back to removing an empty directory).
     Delete(String),
+    /// Delete a remote file, or a directory together with everything in it.
+    /// Symlinks are removed, never followed.
+    RemoveTree(String),
     /// Create a remote directory.
     MkDir(String),
     /// Rename / move a remote path.
@@ -203,6 +206,13 @@ async fn sftp_task_loop(
                 let _ = event_tx.send(CoreEvent::SftpOpDone { result }).await;
             }
 
+            SftpCommand::RemoveTree(path) => {
+                let result = do_remove_tree(&sftp, &path)
+                    .await
+                    .map_err(|e| e.to_string());
+                let _ = event_tx.send(CoreEvent::SftpOpDone { result }).await;
+            }
+
             SftpCommand::MkDir(path) => {
                 let result = sftp.create_dir(&path).await.map_err(|e| e.to_string());
                 let _ = event_tx.send(CoreEvent::SftpOpDone { result }).await;
@@ -294,6 +304,22 @@ async fn do_list_dir(
     Ok(entries)
 }
 
+/// `name` inside the remote directory `dir`.
+fn join_remote(dir: &str, name: &str) -> String {
+    if dir.ends_with('/') {
+        format!("{dir}{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+/// Whether a name read from a directory listing is safe to append to a path: a
+/// hostile server must not be able to steer a recursive download out of its
+/// destination with `..` or a separator smuggled into an entry name.
+fn is_plain_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', '\0'])
+}
+
 async fn do_download(
     sftp: &russh_sftp::client::SftpSession,
     remote: &str,
@@ -312,13 +338,59 @@ async fn do_download(
         anyhow::bail!("Path contains null bytes");
     }
 
-    // Fetch size for progress (best-effort).
-    let total = sftp
-        .metadata(remote)
-        .await
-        .map(|m| m.size.unwrap_or(0))
-        .unwrap_or(0);
+    let meta = sftp.metadata(remote).await.ok();
+    if !meta.as_ref().is_some_and(|m| m.is_dir()) {
+        let total = meta.and_then(|m| m.size).unwrap_or(0);
+        return download_file(sftp, remote, local, total, transfer_id, event_tx).await;
+    }
 
+    // A directory: recreate the tree locally, depth-first. Only real directories
+    // are descended into — a symlinked one is fetched as whatever it resolves to,
+    // which keeps a link cycle from recursing forever.
+    let mut stack = vec![(remote.to_string(), std::path::PathBuf::from(local))];
+    while let Some((remote_dir, local_dir)) = stack.pop() {
+        tokio::fs::create_dir_all(&local_dir)
+            .await
+            .with_context(|| format!("create local dir '{}'", local_dir.display()))?;
+        let entries = sftp
+            .read_dir(remote_dir.as_str())
+            .await
+            .with_context(|| format!("read remote dir '{remote_dir}'"))?;
+        for entry in entries {
+            let name = entry.file_name();
+            if !is_plain_name(&name) {
+                anyhow::bail!("unsafe file name in '{remote_dir}': {name:?}");
+            }
+            let remote_path = join_remote(&remote_dir, &name);
+            let local_path = local_dir.join(&name);
+            if entry.file_type().is_dir() {
+                stack.push((remote_path, local_path));
+            } else {
+                let total = entry.metadata().size.unwrap_or(0);
+                download_file(
+                    sftp,
+                    &remote_path,
+                    &local_path.to_string_lossy(),
+                    total,
+                    transfer_id,
+                    event_tx,
+                )
+                .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Copies one remote file to `local`, reporting progress against `total`.
+async fn download_file(
+    sftp: &russh_sftp::client::SftpSession,
+    remote: &str,
+    local: &str,
+    total: u64,
+    transfer_id: TransferId,
+    event_tx: &mpsc::Sender<CoreEvent>,
+) -> anyhow::Result<()> {
     let mut remote_file = sftp
         .open(remote)
         .await
@@ -369,14 +441,84 @@ async fn do_upload(
         anyhow::bail!("Path contains null bytes");
     }
 
+    let is_dir = tokio::fs::metadata(local)
+        .await
+        .map(|m| m.is_dir())
+        .unwrap_or(false);
+    if !is_dir {
+        return upload_file(local, sftp, remote, transfer_id, event_tx).await;
+    }
+
+    // A directory: recreate the tree remotely, depth-first. Only real directories
+    // are descended into (a symlinked one is skipped), so a link cycle cannot
+    // recurse forever.
+    let mut stack = vec![(std::path::PathBuf::from(local), remote.to_string())];
+    while let Some((local_dir, remote_dir)) = stack.pop() {
+        ensure_remote_dir(sftp, &remote_dir).await?;
+        let mut read_dir = tokio::fs::read_dir(&local_dir)
+            .await
+            .with_context(|| format!("read local dir '{}'", local_dir.display()))?;
+        while let Some(entry) = read_dir
+            .next_entry()
+            .await
+            .context("read local dir entry")?
+        {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let remote_path = join_remote(&remote_dir, &name);
+            let file_type = entry.file_type().await.context("read local file type")?;
+            if file_type.is_dir() {
+                stack.push((entry.path(), remote_path));
+            } else if file_type.is_symlink()
+                && tokio::fs::metadata(entry.path())
+                    .await
+                    .is_ok_and(|m| m.is_dir())
+            {
+                tracing::debug!("skipping symlinked dir {}", entry.path().display());
+            } else {
+                upload_file(
+                    &entry.path().to_string_lossy(),
+                    sftp,
+                    &remote_path,
+                    transfer_id,
+                    event_tx,
+                )
+                .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Creates the remote directory `path`, accepting one that already exists.
+async fn ensure_remote_dir(
+    sftp: &russh_sftp::client::SftpSession,
+    path: &str,
+) -> anyhow::Result<()> {
+    if let Err(e) = sftp.create_dir(path).await {
+        let exists = sftp.metadata(path).await.is_ok_and(|m| m.is_dir());
+        if !exists {
+            return Err(e).with_context(|| format!("create remote dir '{path}'"));
+        }
+    }
+    Ok(())
+}
+
+/// Copies one local file to `remote`.
+async fn upload_file(
+    local: &str,
+    sftp: &russh_sftp::client::SftpSession,
+    remote: &str,
+    transfer_id: TransferId,
+    event_tx: &mpsc::Sender<CoreEvent>,
+) -> anyhow::Result<()> {
     let mut local_file = tokio::fs::File::open(local)
         .await
-        .context("open local file for upload")?;
+        .with_context(|| format!("open local file '{local}' for upload"))?;
     let meta = local_file.metadata().await.ok();
     // Opening a directory succeeds on Unix and only the first read fails — by then
     // the remote file would already exist, empty. Refuse before touching the remote.
     if meta.as_ref().is_some_and(|m| m.is_dir()) {
-        anyhow::bail!("folders cannot be uploaded: {local}");
+        anyhow::bail!("not a file: {local}");
     }
     let total = meta.map(|m| m.len()).unwrap_or(0);
 
@@ -403,6 +545,55 @@ async fn do_upload(
             .await;
     }
 
+    Ok(())
+}
+
+/// Removes a remote file, or a directory with everything below it. Symlinks are
+/// unlinked, never followed.
+async fn do_remove_tree(sftp: &russh_sftp::client::SftpSession, path: &str) -> anyhow::Result<()> {
+    if path.contains('\0') {
+        anyhow::bail!("Path contains null bytes");
+    }
+    let meta = sftp
+        .symlink_metadata(path)
+        .await
+        .with_context(|| format!("stat remote '{path}'"))?;
+    if !meta.is_dir() {
+        return sftp
+            .remove_file(path)
+            .await
+            .with_context(|| format!("remove remote file '{path}'"));
+    }
+
+    // Post-order walk: a directory is removed once its children are gone.
+    let mut stack = vec![(path.to_string(), false)];
+    while let Some((dir, emptied)) = stack.pop() {
+        if emptied {
+            sftp.remove_dir(dir.as_str())
+                .await
+                .with_context(|| format!("remove remote dir '{dir}'"))?;
+            continue;
+        }
+        stack.push((dir.clone(), true));
+        let entries = sftp
+            .read_dir(dir.as_str())
+            .await
+            .with_context(|| format!("read remote dir '{dir}'"))?;
+        for entry in entries {
+            let name = entry.file_name();
+            if !is_plain_name(&name) {
+                anyhow::bail!("unsafe file name in '{dir}': {name:?}");
+            }
+            let child = join_remote(&dir, &name);
+            if entry.file_type().is_dir() {
+                stack.push((child, false));
+            } else {
+                sftp.remove_file(child.as_str())
+                    .await
+                    .with_context(|| format!("remove remote file '{child}'"))?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -506,4 +697,72 @@ pub async fn preview_local_file(path: &str) -> anyhow::Result<String> {
         .context("read local preview bytes")?;
     buf.truncate(n);
     Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Removes a local file, or a directory with everything below it. A symlink is
+/// unlinked, never followed.
+///
+/// # Errors
+/// Returns an error if the path cannot be inspected or removed.
+pub async fn remove_local_tree(path: &str) -> anyhow::Result<()> {
+    let meta = tokio::fs::symlink_metadata(path)
+        .await
+        .with_context(|| format!("stat local '{path}'"))?;
+    if meta.is_dir() {
+        tokio::fs::remove_dir_all(path)
+            .await
+            .with_context(|| format!("remove local dir '{path}'"))
+    } else {
+        tokio::fs::remove_file(path)
+            .await
+            .with_context(|| format!("remove local file '{path}'"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_names_reject_traversal() {
+        assert!(is_plain_name("notes.txt"));
+        assert!(is_plain_name(".bashrc"));
+        assert!(!is_plain_name(""));
+        assert!(!is_plain_name("."));
+        assert!(!is_plain_name(".."));
+        assert!(!is_plain_name("../etc"));
+        assert!(!is_plain_name("a/b"));
+        assert!(!is_plain_name("a\\b"));
+    }
+
+    #[test]
+    fn join_remote_handles_trailing_slash() {
+        assert_eq!(join_remote("/", "a"), "/a");
+        assert_eq!(join_remote("/srv", "a"), "/srv/a");
+        assert_eq!(join_remote("/srv/", "a"), "/srv/a");
+    }
+
+    #[tokio::test]
+    async fn remove_local_tree_removes_nested_dirs_and_files() {
+        let root = std::env::temp_dir().join(format!("omnyssh-rm-{}", std::process::id()));
+        let nested = root.join("a/b");
+        tokio::fs::create_dir_all(&nested).await.unwrap();
+        tokio::fs::write(nested.join("f.txt"), b"x").await.unwrap();
+        tokio::fs::write(root.join("top.txt"), b"y").await.unwrap();
+
+        remove_local_tree(&root.join("top.txt").to_string_lossy())
+            .await
+            .unwrap();
+        assert!(!root.join("top.txt").exists());
+
+        remove_local_tree(&root.to_string_lossy()).await.unwrap();
+        assert!(!root.exists());
+    }
+
+    #[tokio::test]
+    async fn remove_local_tree_errors_on_missing_path() {
+        assert!(remove_local_tree("/definitely/not/here/omnyssh")
+            .await
+            .is_err());
+    }
 }

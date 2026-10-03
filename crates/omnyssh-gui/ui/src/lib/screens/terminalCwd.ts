@@ -69,3 +69,14 @@ export function joinRemote(dir: string, name: string): string {
   if (dir === '.' || dir === '') return name;
   return dir.endsWith('/') ? `${dir}${name}` : `${dir}/${name}`;
 }
+
+/** The SFTP path a name typed into the terminal's Download command points at: absolute
+ *  and home-relative (`~/…`) paths as they are, anything else inside the shell's
+ *  directory `dir` (itself already an SFTP path — see `toSftpDir`). */
+export function resolveRemote(dir: string, input: string): string | undefined {
+  const name = input.trim();
+  if (!name) return undefined;
+  if (name.startsWith('/')) return name;
+  if (name === '~' || name.startsWith('~/')) return toSftpDir(name);
+  return joinRemote(dir, name.replace(/^\.\//, ''));
+}
