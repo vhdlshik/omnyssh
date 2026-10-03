@@ -136,8 +136,8 @@
                 <button
                   type="button"
                   class="shrink-0 rounded p-1 opacity-60 transition hover:opacity-100 {focusRing}"
-                  title="Close {sessionLabel(s)}"
-                  aria-label="Close {sessionLabel(s)}"
+                  title="Close {sessionTitle(s)}"
+                  aria-label="Close {sessionTitle(s)}"
                   onclick={() => closeSession(s.id)}
                 >
                   <Icon name="close" size={14} />

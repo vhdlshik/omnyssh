@@ -10,7 +10,8 @@
   import type { Terminal } from '@xterm/xterm';
   import type { FitAddon } from '@xterm/addon-fit';
   import { Channel } from '@tauri-apps/api/core';
-  import { getCurrentWebview } from '@tauri-apps/api/webview';
+  import type { EventCallback } from '@tauri-apps/api/event';
+  import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview';
   import { downloadDir, join as joinLocalPath } from '@tauri-apps/api/path';
   import { open as openFileDialog, save as saveFileDialog } from '@tauri-apps/plugin-dialog';
   import Modal from '$lib/components/Modal.svelte';
@@ -304,20 +305,24 @@
         const dir = parseTitleCwd(title);
         if (dir) titleDir = dir;
       });
-      void getCurrentWebview()
-        .onDragDropEvent((event) => {
-          const p = event.payload;
-          if (p.type === 'leave') {
-            dragOver = false;
-          } else if (p.type === 'drop') {
-            dragOver = false;
-            if (p.paths.length > 0 && termId != null && overTerminal(p.position)) {
-              uploadDropped(p.paths);
-            }
-          } else {
-            dragOver = termId != null && overTerminal(p.position);
+      const onDragDrop: EventCallback<DragDropEvent> = (event) => {
+        const p = event.payload;
+        if (p.type === 'leave') {
+          dragOver = false;
+        } else if (p.type === 'drop') {
+          dragOver = false;
+          if (p.paths.length > 0 && termId != null && overTerminal(p.position)) {
+            uploadDropped(p.paths);
           }
-        })
+        } else {
+          dragOver = termId != null && overTerminal(p.position);
+        }
+      };
+      // getCurrentWebview throws synchronously when there is no Tauri webview (the
+      // e2e stub); calling it inside the chain makes that a rejection, so a missing
+      // drop listener never stops the terminal from opening.
+      void Promise.resolve()
+        .then(() => getCurrentWebview().onDragDropEvent(onDragDrop))
         .then((unlisten) => {
           if (destroyed) unlisten();
           else stopDragDrop = unlisten;
