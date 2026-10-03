@@ -11,6 +11,10 @@
   import type { FitAddon } from '@xterm/addon-fit';
   import { Channel } from '@tauri-apps/api/core';
   import { getCurrentWebview } from '@tauri-apps/api/webview';
+  import { downloadDir, join as joinLocalPath } from '@tauri-apps/api/path';
+  import { open as openFileDialog, save as saveFileDialog } from '@tauri-apps/plugin-dialog';
+  import Modal from '$lib/components/Modal.svelte';
+  import { Icon } from '$lib/theme';
   import { theme } from '$lib/stores/theme';
   import { xtermTheme } from '$lib/theme/terminalTheme';
   import { sessions, type Session } from '$lib/stores/sessions';
@@ -26,16 +30,18 @@
     terminalPaste
   } from '$lib/ipc/commands';
   import { shouldFadeTop } from './terminalFade';
-  import { chunkBytes, isCopyShortcut, layoutFallback } from './terminalInput';
+  import { chunkBytes, fileShortcut, isCopyShortcut, layoutFallback } from './terminalInput';
   import {
     PWD_OSC,
+    baseName,
     parseOsc7,
     parsePwdAnswer,
     parseTitleCwd,
     pwdProbeCommand,
+    resolveRemote,
     toSftpDir
   } from './terminalCwd';
-  import { uploadToDir, type UploadStatus } from './terminalUpload';
+  import { downloadTo, uploadToDir, type UploadStatus } from './terminalUpload';
   import { formatBytes } from '$lib/stores/sftp';
   import { isMac } from '$lib/platform';
   import type { TerminalBytes } from '$lib/bindings';
@@ -143,6 +149,66 @@
       noticeTimer = undefined;
       notice = null;
     }, 4000);
+  }
+
+  /** The Upload command (button or Ctrl+Shift+U): pick local files, send them to the
+   *  shell's directory exactly as a drop would. */
+  async function pickUpload(): Promise<void> {
+    if (termId == null) return;
+    try {
+      const picked = await openFileDialog({ multiple: true, title: 'Upload to the shell’s folder' });
+      const paths = picked == null ? [] : Array.isArray(picked) ? picked : [picked];
+      if (paths.length > 0 && !destroyed) uploadDropped(paths);
+    } catch (err) {
+      lastError.set(`Upload failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // The Download command's prompt: a name (or path) relative to the shell's directory.
+  let downloadPrompt = $state<{ value: string } | null>(null);
+
+  /** The Download command (button or Ctrl+Shift+D). A one-line selection — a name
+   *  picked out of `ls` — is offered as the file to fetch. */
+  function openDownload(): void {
+    if (termId == null) return;
+    const selected = term?.hasSelection() ? term.getSelection().trim() : '';
+    downloadPrompt = { value: selected.includes('\n') ? '' : selected };
+  }
+
+  function submitDownload(): void {
+    const input = downloadPrompt?.value.trim();
+    downloadPrompt = null;
+    if (!input) return;
+    const known = shellDir;
+    uploadChain = uploadChain.then(async () => {
+      if (destroyed) return;
+      try {
+        const dir = known ?? (await probeDir()) ?? '~';
+        const remote = resolveRemote(toSftpDir(dir), input);
+        if (!remote || destroyed) return;
+        const name = baseName(remote) ?? 'download';
+        let defaultPath: string | undefined;
+        try {
+          defaultPath = await joinLocalPath(await downloadDir(), name);
+        } catch {
+          defaultPath = name;
+        }
+        const local = await saveFileDialog({ title: `Save ${name}`, defaultPath });
+        if (!local || destroyed) return;
+        const result = await downloadTo(session.hostName, remote, local, (s) => {
+          if (!destroyed) upload = s;
+        });
+        if (result.failures.length > 0) {
+          lastError.set(`Download of ${remote} failed — ${result.failures.join('; ')}`);
+        } else {
+          showNotice(`Downloaded ${name} to ${local}`);
+        }
+      } catch (err) {
+        lastError.set(`Download failed: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        upload = null;
+      }
+    });
   }
 
   /** Queue an upload of `paths` into the shell's current directory. Drops run one
@@ -297,6 +363,13 @@
       // reaches the shell. Returning false only keeps xterm out of it; the default is
       // ours to stop. The write happens inside the keydown, which WebKit requires.
       term.attachCustomKeyEventHandler((e) => {
+        const fileCommand = fileShortcut(e, isMac);
+        if (fileCommand) {
+          e.preventDefault();
+          if (fileCommand === 'upload') void pickUpload();
+          else openDownload();
+          return false;
+        }
         if (isCopyShortcut(e, isMac)) {
           e.preventDefault();
           if (term?.hasSelection()) {
@@ -371,13 +444,46 @@
 <!-- bg-surface fills behind the macOS traffic lights (no seam). Text selection stays
      disabled app-wide (app.css); the terminal is the one selectable surface, handled
      by xterm's own selection (not CSS). -->
-<div bind:this={root} class="absolute inset-0 overflow-hidden bg-surface {active ? '' : 'hidden'}">
+<div bind:this={root} class="group absolute inset-0 overflow-hidden bg-surface {active ? '' : 'hidden'}">
   <!-- Inset via this wrapper, not the xterm host: padding on the element xterm mounts
        into makes FitAddon over-size, sliding the last row under the status bar. The top
        inset clears the macOS traffic-light strip; the bottom gap clears the footer. -->
   <div class="h-full w-full" style="padding: max(var(--titlebar-h), 0.75rem) 0.5rem 1rem;">
     <div bind:this={container} class="h-full w-full" class:term-fade={scrolled}></div>
   </div>
+
+  {#if ready}
+    <!-- Faint while the pointer is over the terminal, solid over the buttons themselves:
+         discoverable without sitting on top of the output. A click leaves the keyboard
+         with the shell. -->
+    <div
+      class="absolute right-4 z-10 flex gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-60 hover:!opacity-100"
+      style="top: max(var(--titlebar-h), 0.75rem);"
+      role="toolbar"
+      aria-label="file transfer"
+    >
+      <button
+        type="button"
+        class="inline-flex items-center gap-1 rounded-full border border-default bg-surface-raised px-2 py-1 text-xs text-muted shadow transition hover:text-fg"
+        title="Upload files to the shell’s folder ({isMac ? '⌘⇧U' : 'Ctrl+Shift+U'})"
+        onmousedown={(e) => e.preventDefault()}
+        onclick={() => void pickUpload()}
+      >
+        <Icon name="upload" size={13} />
+        Upload
+      </button>
+      <button
+        type="button"
+        class="inline-flex items-center gap-1 rounded-full border border-default bg-surface-raised px-2 py-1 text-xs text-muted shadow transition hover:text-fg"
+        title="Download a file from the shell’s folder ({isMac ? '⌘⇧D' : 'Ctrl+Shift+D'})"
+        onmousedown={(e) => e.preventDefault()}
+        onclick={openDownload}
+      >
+        <Icon name="download" size={13} />
+        Download
+      </button>
+    </div>
+  {/if}
 
   {#if dragOver}
     <div
@@ -404,7 +510,8 @@
       {#if upload}
         <div class="flex items-center justify-between gap-3">
           <span class="min-w-0 truncate">
-            Uploading <span class="font-mono text-fg">{upload.name}</span>
+            {upload.kind === 'download' ? 'Downloading' : 'Uploading'}
+            <span class="font-mono text-fg">{upload.name}</span>
             {#if upload.count > 1}({upload.index}/{upload.count}){/if}
           </span>
           {#if upload.total > 0}
@@ -427,6 +534,52 @@
     </div>
   {/if}
 </div>
+
+{#if active && downloadPrompt}
+  <Modal label="Download" onClose={() => (downloadPrompt = null)}>
+    <form
+      onsubmit={(e) => {
+        e.preventDefault();
+        submitDownload();
+      }}
+    >
+      <header class="border-b border-default px-5 py-3.5">
+        <h2 class="text-sm font-semibold">Download from {session.hostName}</h2>
+      </header>
+      <div class="px-5 py-4">
+        <!-- svelte-ignore a11y_autofocus -->
+        <input
+          autofocus
+          bind:value={downloadPrompt.value}
+          class="w-full rounded-lg bg-surface-inset px-3 py-2 font-mono text-sm text-fg outline-none placeholder:text-faint focus-visible:ring-2 focus-visible:ring-focus"
+          placeholder="file name or path"
+          aria-label="Remote file"
+        />
+        <p class="mt-2 text-xs text-faint">
+          Relative to
+          {#if shellDir}<span class="font-mono">{shellDir}</span>{:else}the shell’s current folder{/if}.
+          Folders download whole.
+        </p>
+      </div>
+      <footer class="flex justify-end gap-2 border-t border-default px-5 py-3">
+        <button
+          type="button"
+          class="rounded-full px-4 py-2 text-sm text-muted transition hover:bg-surface-inset hover:text-fg"
+          onclick={() => (downloadPrompt = null)}
+        >
+          Cancel
+        </button>
+        <button
+          type="submit"
+          class="rounded-full bg-accent px-5 py-2 text-sm font-medium text-accent-fg transition hover:opacity-90 disabled:opacity-50"
+          disabled={!downloadPrompt.value.trim()}
+        >
+          Download
+        </button>
+      </footer>
+    </form>
+  </Modal>
+{/if}
 
 <style>
   /* Scrolled output dissolves into the top edge instead of hard-clipping (on only while

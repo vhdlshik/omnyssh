@@ -253,6 +253,18 @@ async sftpDelete(sessionId: number, path: string) : Promise<Result<null, Command
 }
 },
 /**
+ * Delete a remote file, or a directory with everything in it; completion arrives as
+ * `sftp-op-done`. Symlinks are removed, never followed.
+ */
+async sftpRemoveTree(sessionId: number, path: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sftp_remove_tree", { sessionId, path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Read a remote file's preview bytes (tech-gui.md §4.2); arrives as `file-preview`.
  */
 async sftpPreview(sessionId: number, path: string) : Promise<Result<null, CommandError>> {
@@ -293,6 +305,41 @@ async listLocalDir(path: string) : Promise<Result<FileEntryDto[], CommandError>>
 async previewLocalFile(path: string) : Promise<Result<string, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("preview_local_file", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Create a local directory for the file manager's F7. Returns once it exists.
+ */
+async localMkdir(path: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("local_mkdir", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Rename / move a local path (the file manager's Shift+F6). Fails rather than
+ * replacing an existing destination, matching what SFTP's rename does.
+ */
+async localRename(from: string, to: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("local_rename", { from, to }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete a local file, or a directory with everything in it (the file manager's F8,
+ * and the source side of a move). Symlinks are removed, never followed.
+ */
+async localDelete(path: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("local_delete", { path }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

@@ -124,6 +124,9 @@ pub enum AppAction {
     FmCopy,
     /// Paste clipboard contents into the active panel (p).
     FmPaste,
+    /// Copy the marked (or cursor) items straight into the other panel (F5),
+    /// Total Commander style — no clipboard round trip.
+    FmCopyToOther,
     /// Open the delete-confirmation popup for marked / cursor items (D).
     FmOpenDeleteConfirm,
     /// User confirmed deletion.

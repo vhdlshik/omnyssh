@@ -12,7 +12,7 @@ use omnyssh_core::ssh::identity;
 use omnyssh_core::ssh::password::Prompter;
 use omnyssh_core::ssh::sftp::{
     list_local_dir as core_list_local_dir, preview_local_file as core_preview_local_file,
-    SftpCommand, SftpManager,
+    remove_local_tree, SftpCommand, SftpManager,
 };
 
 use crate::bridge;
@@ -153,6 +153,19 @@ pub fn sftp_delete(
     Ok(())
 }
 
+/// Delete a remote file, or a directory with everything in it; completion arrives as
+/// `sftp-op-done`. Symlinks are removed, never followed.
+#[tauri::command]
+#[specta::specta]
+pub fn sftp_remove_tree(
+    state: State<'_, GuiState>,
+    session_id: u64,
+    path: String,
+) -> Result<(), CommandError> {
+    state.send_sftp(session_id, SftpCommand::RemoveTree(path));
+    Ok(())
+}
+
 /// Read a remote file's preview bytes (tech-gui.md §4.2); arrives as `file-preview`.
 #[tauri::command]
 #[specta::specta]
@@ -194,4 +207,38 @@ pub async fn preview_local_file(path: String) -> Result<String, CommandError> {
         .map_err(|e| CommandError {
             message: e.to_string(),
         })
+}
+
+fn io_error(e: impl std::fmt::Display) -> CommandError {
+    CommandError {
+        message: e.to_string(),
+    }
+}
+
+/// Create a local directory for the file manager's F7. Returns once it exists.
+#[tauri::command]
+#[specta::specta]
+pub async fn local_mkdir(path: String) -> Result<(), CommandError> {
+    tokio::fs::create_dir(&path).await.map_err(io_error)
+}
+
+/// Rename / move a local path (the file manager's Shift+F6). Fails rather than
+/// replacing an existing destination, matching what SFTP's rename does.
+#[tauri::command]
+#[specta::specta]
+pub async fn local_rename(from: String, to: String) -> Result<(), CommandError> {
+    if tokio::fs::symlink_metadata(&to).await.is_ok() {
+        return Err(io_error(format!("'{to}' already exists")));
+    }
+    tokio::fs::rename(&from, &to).await.map_err(io_error)
+}
+
+/// Delete a local file, or a directory with everything in it (the file manager's F8,
+/// and the source side of a move). Symlinks are removed, never followed.
+#[tauri::command]
+#[specta::specta]
+pub async fn local_delete(path: String) -> Result<(), CommandError> {
+    remove_local_tree(&path)
+        .await
+        .map_err(|e| io_error(format!("{e:#}")))
 }

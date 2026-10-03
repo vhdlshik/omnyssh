@@ -42,6 +42,21 @@ export function isCopyShortcut(e: KeyPress, mac: boolean): boolean {
   return e.key === 'c' || e.key === 'C' || (e.code === 'KeyC' && nonLatinLetter(e.key));
 }
 
+/** The terminal's own file commands: Ctrl+Shift+U uploads into the shell's directory,
+ *  Ctrl+Shift+D downloads from it (Cmd+Shift on macOS). Like copy, the physical key
+ *  stands in under a non-Latin layout. */
+export function fileShortcut(e: KeyPress, mac: boolean): 'upload' | 'download' | null {
+  if (e.type !== 'keydown' || e.isComposing || e.keyCode === 229) return null;
+  if (e.altKey || !e.shiftKey) return null;
+  if (mac ? !e.metaKey || e.ctrlKey : !e.ctrlKey || e.metaKey) return null;
+  const is = (letter: string): boolean =>
+    e.key.toLowerCase() === letter.toLowerCase() ||
+    (e.code === `Key${letter}` && nonLatinLetter(e.key));
+  if (is('U')) return 'upload';
+  if (is('D')) return 'download';
+  return null;
+}
+
 /** What a Ctrl chord means when WebKitGTK cannot say. Under a non-Latin layout it
  *  reports keyCode 0 for the letters, so xterm sends nothing for Ctrl+C and the
  *  webview's own Ctrl+Shift+V never fires; the physical key decides instead, as in

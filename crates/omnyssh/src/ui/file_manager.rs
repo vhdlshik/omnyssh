@@ -149,6 +149,12 @@ pub fn handle_input(key: KeyEvent, view: &mut ViewState) -> Option<AppAction> {
         KeyCode::Char('.') => Some(AppAction::FmToggleHidden),
         KeyCode::Char('R') => Some(AppAction::FmOpenRename),
         KeyCode::Char('H') => Some(AppAction::FmOpenHostPicker),
+        // Total Commander's function-key row (F1–F4 stay the screen switches).
+        KeyCode::F(5) => Some(AppAction::FmCopyToOther),
+        KeyCode::F(6) => Some(AppAction::FmOpenRename),
+        KeyCode::F(7) => Some(AppAction::FmOpenMkDir),
+        KeyCode::F(8) | KeyCode::Delete => Some(AppAction::FmOpenDeleteConfirm),
+        KeyCode::Insert => Some(AppAction::FmMarkFile),
         KeyCode::Esc => Some(AppAction::FmClosePopup),
         _ => None,
     }
@@ -1030,4 +1036,40 @@ fn sanitize_preview_content(content: &str, max_width: usize, max_lines: usize) -
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyModifiers;
+
+    fn press(code: KeyCode) -> Option<AppAction> {
+        let mut view = ViewState::default();
+        handle_input(KeyEvent::new(code, KeyModifiers::NONE), &mut view)
+    }
+
+    #[test]
+    fn function_keys_follow_total_commander() {
+        assert!(matches!(
+            press(KeyCode::F(5)),
+            Some(AppAction::FmCopyToOther)
+        ));
+        assert!(matches!(
+            press(KeyCode::F(6)),
+            Some(AppAction::FmOpenRename)
+        ));
+        assert!(matches!(press(KeyCode::F(7)), Some(AppAction::FmOpenMkDir)));
+        assert!(matches!(
+            press(KeyCode::F(8)),
+            Some(AppAction::FmOpenDeleteConfirm)
+        ));
+        assert!(matches!(
+            press(KeyCode::Delete),
+            Some(AppAction::FmOpenDeleteConfirm)
+        ));
+        assert!(matches!(
+            press(KeyCode::Insert),
+            Some(AppAction::FmMarkFile)
+        ));
+    }
 }

@@ -146,6 +146,13 @@ export async function sftpDelete(sessionId: number, path: string): Promise<void>
   if (res.status === 'error') throw new Error(res.error.message);
 }
 
+/** Delete a remote file, or a directory with everything in it; completion arrives as
+ *  `sftp-op-done`. */
+export async function sftpRemoveTree(sessionId: number, path: string): Promise<void> {
+  const res = await commands.sftpRemoveTree(sessionId, path);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
 /** Request a remote file preview; the bytes arrive as `file-preview`. */
 export async function sftpPreview(sessionId: number, path: string): Promise<void> {
   const res = await commands.sftpPreview(sessionId, path);
@@ -170,6 +177,24 @@ export async function previewLocalFile(path: string): Promise<string> {
   const res = await commands.previewLocalFile(path);
   if (res.status === 'error') throw new Error(res.error.message);
   return res.data;
+}
+
+/** Create a local directory (returns once it exists — no event). */
+export async function localMkdir(path: string): Promise<void> {
+  const res = await commands.localMkdir(path);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Rename / move a local path; refuses to replace an existing destination. */
+export async function localRename(from: string, to: string): Promise<void> {
+  const res = await commands.localRename(from, to);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Delete a local file, or a directory with everything in it. */
+export async function localDelete(path: string): Promise<void> {
+  const res = await commands.localDelete(path);
+  if (res.status === 'error') throw new Error(res.error.message);
 }
 
 /** Start auto SSH-key setup for a host; progress + the outcome arrive as `key-setup-*`
